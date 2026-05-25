@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="32" fill="#031b4e"/>
+  <circle cx="24" cy="26" r="10" fill="#00a3ff"/>
+  <circle cx="40" cy="26" r="10" fill="#22d3ee" opacity=".85"/>
+  <text x="32" y="51" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#ffffff">NDX</text>
+</svg>

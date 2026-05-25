@@ -10,29 +10,73 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useChartStore, type IndicatorKey } from "@/lib/store/chart-store";
+import {
+  useChartStore,
+  type DrawingTool,
+  type IndicatorConfig,
+  type IndicatorKey,
+} from "@/lib/store/chart-store";
 
-interface Entry {
+interface IndicatorEntry {
+  type: "indicator";
   key: IndicatorKey;
-  label: (cfg: {
-    ema20: number;
-    ema50: number;
-    ema200: number;
-    rsi: number;
-    macdFast: number;
-    macdSlow: number;
-    macdSignal: number;
-  }) => string;
+  label: (cfg: IndicatorConfig) => string;
   group: string;
 }
 
+interface ToolEntry {
+  type: "tool";
+  key: DrawingTool;
+  label: (cfg: IndicatorConfig) => string;
+  group: string;
+}
+
+type Entry = IndicatorEntry | ToolEntry;
+
 const ENTRIES: Entry[] = [
-  { key: "ema20", group: "Medias móviles", label: (c) => `EMA ${c.ema20}` },
-  { key: "ema50", group: "Medias móviles", label: (c) => `EMA ${c.ema50}` },
-  { key: "ema200", group: "Medias móviles", label: (c) => `EMA ${c.ema200}` },
-  { key: "volume", group: "Volumen", label: () => "Volumen" },
-  { key: "rsi", group: "Osciladores", label: (c) => `RSI (${c.rsi})` },
+  { type: "indicator", key: "ema20", group: "Medias moviles", label: (c) => `EMA ${c.ema20}` },
+  { type: "indicator", key: "ema50", group: "Medias moviles", label: (c) => `EMA ${c.ema50}` },
+  { type: "indicator", key: "ema200", group: "Medias moviles", label: (c) => `EMA ${c.ema200}` },
   {
+    type: "indicator",
+    key: "emaCross",
+    group: "Medias moviles",
+    label: (c) => `EMA Cross (${c.emaCross.map((line) => line.period).join(", ")})`,
+  },
+  { type: "indicator", key: "volume", group: "Volumen", label: () => "Volumen" },
+  {
+    type: "indicator",
+    key: "volumeProfile",
+    group: "Volumen",
+    label: () => "Volume Profile Visible Range",
+  },
+  {
+    type: "tool",
+    key: "fixedVolumeProfile",
+    group: "Volumen",
+    label: () => "Fixed Volume Profile",
+  },
+  {
+    type: "indicator",
+    key: "swingPatterns",
+    group: "Patrones",
+    label: (c) => `Swing Highs/Lows (${c.swingPatterns.length})`,
+  },
+  {
+    type: "indicator",
+    key: "pmRangeBreakout",
+    group: "Sesiones",
+    label: () => "PM Range Breakout PRO",
+  },
+  {
+    type: "indicator",
+    key: "sqzAdxTtm",
+    group: "Osciladores",
+    label: () => "SQZ + ADX + TTM",
+  },
+  { type: "indicator", key: "rsi", group: "Osciladores", label: (c) => `RSI (${c.rsi})` },
+  {
+    type: "indicator",
     key: "macd",
     group: "Osciladores",
     label: (c) => `MACD (${c.macdFast}, ${c.macdSlow}, ${c.macdSignal})`,
@@ -42,7 +86,9 @@ const ENTRIES: Entry[] = [
 export function IndicatorMenu() {
   const indicators = useChartStore((s) => s.indicators);
   const config = useChartStore((s) => s.config);
+  const tool = useChartStore((s) => s.tool);
   const toggle = useChartStore((s) => s.toggleIndicator);
+  const setTool = useChartStore((s) => s.setTool);
 
   const groups = ENTRIES.reduce<Record<string, Entry[]>>((acc, i) => {
     (acc[i.group] ||= []).push(i);
@@ -71,13 +117,20 @@ export function IndicatorMenu() {
             </DropdownMenuLabel>
             {items.map((i) => (
               <DropdownMenuItem
-                key={i.key}
+                key={`${i.type}-${i.key}`}
                 closeOnClick={false}
-                onClick={() => toggle(i.key)}
+                onClick={() =>
+                  i.type === "indicator" ? toggle(i.key) : setTool(i.key)
+                }
                 className="flex items-center justify-between text-xs"
               >
                 <span>{i.label(config)}</span>
-                {indicators[i.key] && <Check className="h-3.5 w-3.5 text-tv-blue" />}
+                {i.type === "indicator" && indicators[i.key] && (
+                  <Check className="h-3.5 w-3.5 text-tv-blue" />
+                )}
+                {i.type === "tool" && tool === i.key && (
+                  <Check className="h-3.5 w-3.5 text-tv-blue" />
+                )}
               </DropdownMenuItem>
             ))}
           </DropdownMenuGroup>

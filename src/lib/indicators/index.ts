@@ -1,4 +1,5 @@
 import type { Candle } from "@/lib/binance/types";
+export { sqzAdxTtm, type SqzAdxTtmPoint } from "./sqz-adx-ttm";
 
 export interface IndicatorPoint {
   time: number;
@@ -60,16 +61,16 @@ export function rsi(candles: Candle[], period = 14): IndicatorPoint[] {
   }
   gain /= period;
   loss /= period;
-  let rs = loss === 0 ? 100 : gain / loss;
-  out.push({ time: candles[period].time, value: 100 - 100 / (1 + rs) });
+  let value = loss === 0 ? 100 : gain === 0 ? 0 : 100 - 100 / (1 + gain / loss);
+  out.push({ time: candles[period].time, value });
   for (let i = period + 1; i < candles.length; i++) {
     const diff = candles[i].close - candles[i - 1].close;
     const g = diff > 0 ? diff : 0;
     const l = diff < 0 ? -diff : 0;
     gain = (gain * (period - 1) + g) / period;
     loss = (loss * (period - 1) + l) / period;
-    rs = loss === 0 ? 100 : gain / loss;
-    out.push({ time: candles[i].time, value: 100 - 100 / (1 + rs) });
+    value = loss === 0 ? 100 : gain === 0 ? 0 : 100 - 100 / (1 + gain / loss);
+    out.push({ time: candles[i].time, value });
   }
   return out;
 }

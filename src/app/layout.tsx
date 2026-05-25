@@ -1,24 +1,11 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-sans",
-  subsets: ["latin"],
-  display: "swap",
-});
-
-const jetbrains = JetBrains_Mono({
-  variable: "--font-mono",
-  subsets: ["latin"],
-  display: "swap",
-});
-
 export const metadata: Metadata = {
-  title: "TradingView Test — Crypto charts open source",
+  title: "ChartsAnalyzer",
   description:
-    "Plataforma de charts crypto en vivo. Alternativa gratis a TradingView. Powered by Binance + lightweight-charts.",
+    "Plataforma de charts en vivo con indices, commodities y criptomonedas.",
 };
 
 export default function RootLayout({
@@ -27,13 +14,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="es"
-      className={`dark ${inter.variable} ${jetbrains.variable} h-full antialiased`}
-    >
+    <html lang="es" className="dark h-full antialiased">
       <body className="h-full overflow-hidden bg-tv-bg text-tv-text">
         <TooltipProvider delay={150}>{children}</TooltipProvider>
       </body>
     </html>
   );
 }
+

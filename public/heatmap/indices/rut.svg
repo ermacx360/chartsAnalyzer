@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="32" fill="#1f2937"/>
+  <rect x="15" y="18" width="34" height="25" rx="5" fill="#60a5fa"/>
+  <path d="M22 35 H42" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <text x="32" y="54" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ffffff">RUT</text>
+</svg>

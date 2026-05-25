@@ -11,10 +11,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { fetchExchangeSymbols } from "@/lib/binance/rest";
+import {
+  fetchExchangeSymbols,
+  fetchStockSearchSymbols,
+} from "@/lib/market/data";
 import { useChartStore } from "@/lib/store/chart-store";
 import { cn } from "@/lib/utils";
-import type { SymbolInfo } from "@/lib/binance/types";
+import type { MarketKind, SymbolInfo } from "@/lib/binance/types";
+
+type MarketFilter = "all" | MarketKind;
 
 export function SymbolSelector() {
   const symbol = useChartStore((s) => s.symbol);
@@ -25,25 +30,70 @@ export function SymbolSelector() {
 
   const [query, setQuery] = useState("");
   const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([]);
+  const [stockSearchSymbols, setStockSearchSymbols] = useState<SymbolInfo[]>([]);
+  const [stockSearchLoading, setStockSearchLoading] = useState(false);
+  const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
+  const trimmedQuery = query.trim();
+  const shouldSearchStocks =
+    open &&
+    trimmedQuery.length >= 2 &&
+    (marketFilter === "all" || marketFilter === "stock");
 
   useEffect(() => {
     if (open && allSymbols.length === 0) {
-      fetchExchangeSymbols().then(setAllSymbols).catch(console.error);
+      fetchExchangeSymbols()
+        .then(setAllSymbols)
+        .catch(() => setAllSymbols([]));
     }
   }, [open, allSymbols.length]);
 
+  useEffect(() => {
+    if (!shouldSearchStocks) {
+      return;
+    }
+
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      setStockSearchLoading(true);
+      fetchStockSearchSymbols(trimmedQuery)
+        .then((symbols) => {
+          if (!cancelled) setStockSearchSymbols(symbols);
+        })
+        .catch(() => {
+          if (!cancelled) setStockSearchSymbols([]);
+        })
+        .finally(() => {
+          if (!cancelled) setStockSearchLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [shouldSearchStocks, trimmedQuery]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
-    if (!q) return allSymbols.slice(0, 100);
-    return allSymbols
+    const symbolMap = new Map<string, SymbolInfo>();
+    allSymbols.forEach((symbol) => symbolMap.set(symbol.symbol, symbol));
+    if (shouldSearchStocks) {
+      stockSearchSymbols.forEach((symbol) => symbolMap.set(symbol.symbol, symbol));
+    }
+
+    return Array.from(symbolMap.values())
+      .filter((s) => marketFilter === "all" || s.market === marketFilter)
       .filter(
         (s) =>
+          !q ||
           s.symbol.includes(q) ||
           s.baseAsset.includes(q) ||
-          s.quoteAsset.includes(q),
+          s.quoteAsset.includes(q) ||
+          s.name?.toUpperCase().includes(q) ||
+          s.region?.toUpperCase().includes(q),
       )
       .slice(0, 100);
-  }, [query, allSymbols]);
+  }, [query, allSymbols, stockSearchSymbols, marketFilter, shouldSearchStocks]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -56,10 +106,31 @@ export function SymbolSelector() {
         <DialogHeader className="border-b border-tv-border px-4 py-3">
           <DialogTitle className="text-sm font-medium">Buscar símbolo</DialogTitle>
         </DialogHeader>
-        <div className="border-b border-tv-border p-3">
+        <div className="space-y-2 border-b border-tv-border p-3">
+          <div className="grid grid-cols-5 rounded border border-tv-border bg-tv-bg p-0.5 text-[11px]">
+            {[
+              ["all", "Todo"],
+              ["crypto", "Cripto"],
+              ["index", "Índices"],
+              ["commodity", "Commod."],
+              ["stock", "Acciones"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMarketFilter(value as MarketFilter)}
+                className={cn(
+                  "rounded px-2 py-1 text-tv-text-muted hover:text-tv-text",
+                  marketFilter === value && "bg-tv-panel-hover text-tv-text",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <Input
             autoFocus
-            placeholder="BTC, ETH, SOL…"
+            placeholder="BTC, SPX, Nasdaq…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="bg-tv-bg"
@@ -69,7 +140,9 @@ export function SymbolSelector() {
           <div className="flex flex-col">
             {filtered.length === 0 && (
               <div className="p-4 text-center text-xs text-tv-text-muted">
-                Sin resultados
+                {shouldSearchStocks && stockSearchLoading
+                  ? "Buscando acciones..."
+                  : "Sin resultados"}
               </div>
             )}
             {filtered.map((s) => (
@@ -77,7 +150,7 @@ export function SymbolSelector() {
                 key={s.symbol}
                 onClick={() => {
                   setSymbol(s.symbol);
-                  addToWatchlist(s.symbol);
+                  addToWatchlist(s.symbol, undefined, s.market);
                   setOpen(false);
                   setQuery("");
                 }}
@@ -87,10 +160,14 @@ export function SymbolSelector() {
                 )}
               >
                 <div className="flex items-center gap-3">
-                  <span className="font-semibold text-tv-text">{s.baseAsset}</span>
-                  <span className="text-tv-text-muted">/ {s.quoteAsset}</span>
+                  <span className="font-semibold text-tv-text">
+                    {s.name ?? s.baseAsset}
+                  </span>
+                  <span className="text-tv-text-muted">
+                    {s.market === "crypto" ? `/ ${s.quoteAsset}` : s.region}
+                  </span>
                 </div>
-                <span className="text-tv-text-muted">{s.symbol}</span>
+                <span className="shrink-0 text-tv-text-muted">{s.symbol}</span>
               </button>
             ))}
           </div>

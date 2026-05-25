@@ -1,4 +1,5 @@
 export type Timeframe =
+  | "1s"
   | "1m"
   | "3m"
   | "5m"
@@ -14,6 +15,8 @@ export type Timeframe =
   | "3d"
   | "1w"
   | "1M";
+
+export type MarketKind = "crypto" | "index" | "stock" | "commodity";
 
 export interface Candle {
   time: number; // unix seconds
@@ -34,6 +37,7 @@ export interface Ticker24h {
   lowPrice: number;
   volume: number;
   quoteVolume: number;
+  market?: MarketKind;
 }
 
 export interface SymbolInfo {
@@ -41,4 +45,7 @@ export interface SymbolInfo {
   baseAsset: string;
   quoteAsset: string;
   status: string;
+  market: MarketKind;
+  name?: string;
+  region?: string;
 }

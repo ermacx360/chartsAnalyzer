@@ -7,8 +7,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --font-sans: var(--font-tv-sans);
+  --font-mono: var(--font-tv-mono);
 
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
@@ -47,6 +47,9 @@
 }
 
 :root {
+  --font-tv-sans: Inter, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-tv-mono: "JetBrains Mono", "Cascadia Mono", "Segoe UI Mono", monospace;
+
   /* Force TradingView dark theme as the only theme */
   --background: #131722;
   --foreground: #d1d4dc;
@@ -123,5 +126,175 @@
 @layer utilities {
   .tabular-nums {
     font-variant-numeric: tabular-nums;
+  }
+
+  .bg-tv-bg {
+    background-color: var(--app-tv-bg, #131722);
+  }
+
+  .tv-theme .bg-tv-bg {
+    background-color: var(--app-tv-bg, #131722);
+  }
+
+  .bg-tv-bg\/40 {
+    background-color: color-mix(
+      in srgb,
+      var(--app-tv-bg, #131722) 40%,
+      transparent
+    );
+  }
+
+  .tv-theme .bg-tv-bg\/40 {
+    background-color: color-mix(
+      in srgb,
+      var(--app-tv-bg, #131722) 40%,
+      transparent
+    );
+  }
+
+  .bg-tv-panel {
+    background-color: var(--app-tv-panel, #1e222d);
+  }
+
+  .tv-theme .bg-tv-panel {
+    background-color: var(--app-tv-panel, #1e222d);
+  }
+
+  .bg-tv-panel\/95 {
+    background-color: color-mix(
+      in srgb,
+      var(--app-tv-panel, #1e222d) 95%,
+      transparent
+    );
+  }
+
+  .tv-theme .bg-tv-panel\/95 {
+    background-color: color-mix(
+      in srgb,
+      var(--app-tv-panel, #1e222d) 95%,
+      transparent
+    );
+  }
+
+  .bg-tv-panel-hover {
+    background-color: var(--app-tv-panel-hover, #2a2e39);
+  }
+
+  .tv-theme .bg-tv-panel-hover {
+    background-color: var(--app-tv-panel-hover, #2a2e39);
+  }
+
+  .bg-tv-border {
+    background-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .tv-theme .bg-tv-border {
+    background-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .border-tv-border {
+    border-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .tv-theme .border-tv-border {
+    border-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .border-tv-border\/70 {
+    border-color: color-mix(
+      in srgb,
+      var(--app-tv-border, #2a2e39) 70%,
+      transparent
+    );
+  }
+
+  .tv-theme .border-tv-border\/70 {
+    border-color: color-mix(
+      in srgb,
+      var(--app-tv-border, #2a2e39) 70%,
+      transparent
+    );
+  }
+
+  .ring-tv-border {
+    --tw-ring-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .tv-theme .ring-tv-border {
+    --tw-ring-color: var(--app-tv-border, #2a2e39);
+  }
+
+  .text-tv-text {
+    color: var(--app-tv-text, #d1d4dc);
+  }
+
+  .tv-theme .text-tv-text {
+    color: var(--app-tv-text, #d1d4dc);
+  }
+
+  .text-tv-text-muted {
+    color: var(--app-tv-text-muted, #787b86);
+  }
+
+  .tv-theme .text-tv-text-muted {
+    color: var(--app-tv-text-muted, #787b86);
+  }
+
+  .text-tv-text-dim {
+    color: var(--app-tv-text-dim, #50535e);
+  }
+
+  .tv-theme .text-tv-text-dim {
+    color: var(--app-tv-text-dim, #50535e);
+  }
+
+  .focus\:bg-tv-bg:focus {
+    background-color: var(--app-tv-bg, #131722);
+  }
+
+  .tv-theme .focus\:bg-tv-bg:focus {
+    background-color: var(--app-tv-bg, #131722);
+  }
+
+  .focus\:bg-tv-panel-hover:focus {
+    background-color: var(--app-tv-panel-hover, #2a2e39);
+  }
+
+  .tv-theme .focus\:bg-tv-panel-hover:focus {
+    background-color: var(--app-tv-panel-hover, #2a2e39);
+  }
+
+  @media (hover: hover) {
+    .hover\:bg-tv-bg:hover {
+      background-color: var(--app-tv-bg, #131722);
+    }
+
+    .tv-theme .hover\:bg-tv-bg:hover {
+      background-color: var(--app-tv-bg, #131722);
+    }
+
+    .hover\:bg-tv-panel-hover:hover {
+      background-color: var(--app-tv-panel-hover, #2a2e39);
+    }
+
+    .tv-theme .hover\:bg-tv-panel-hover:hover {
+      background-color: var(--app-tv-panel-hover, #2a2e39);
+    }
+
+    .hover\:border-tv-border:hover {
+      border-color: var(--app-tv-border, #2a2e39);
+    }
+
+    .tv-theme .hover\:border-tv-border:hover {
+      border-color: var(--app-tv-border, #2a2e39);
+    }
+
+    .hover\:text-tv-text:hover {
+      color: var(--app-tv-text, #d1d4dc);
+    }
+
+    .tv-theme .hover\:text-tv-text:hover {
+      color: var(--app-tv-text, #d1d4dc);
+    }
   }
 }

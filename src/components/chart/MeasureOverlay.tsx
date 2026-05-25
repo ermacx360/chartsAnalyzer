@@ -1,6 +1,6 @@
 "use client";
 
-import { formatPrice, formatVolume } from "@/lib/format";
+import { formatPrice } from "@/lib/format";
 
 interface Props {
   aX: number;
@@ -10,16 +10,15 @@ interface Props {
   priceDiff: number;
   pctChange: number;
   bars: number;
-  volume: number;
   durationText: string;
   isUp: boolean;
   isPreview: boolean;
 }
 
 const UP_STROKE = "#26a69a";
-const UP_FILL = "rgba(38, 166, 154, 0.18)";
-const DOWN_STROKE = "#ef5350";
-const DOWN_FILL = "rgba(239, 83, 80, 0.18)";
+const UP_FILL = "rgba(38, 166, 154, 0.16)";
+const DOWN_STROKE = "#ff5a6b";
+const DOWN_FILL = "rgba(255, 90, 107, 0.16)";
 
 export function MeasureOverlay({
   aX,
@@ -29,14 +28,12 @@ export function MeasureOverlay({
   priceDiff,
   pctChange,
   bars,
-  volume,
   durationText,
   isUp,
   isPreview,
 }: Props) {
   const stroke = isUp ? UP_STROKE : DOWN_STROKE;
   const fill = isUp ? UP_FILL : DOWN_FILL;
-
   const left = Math.min(aX, bX);
   const right = Math.max(aX, bX);
   const top = Math.min(aY, bY);
@@ -44,14 +41,9 @@ export function MeasureOverlay({
   const width = Math.max(1, right - left);
   const height = Math.max(1, bottom - top);
   const centerX = (aX + bX) / 2;
-
+  const centerY = (aY + bY) / 2;
   const markerId = `measure-arrow-${isUp ? "up" : "down"}`;
-
-  const labelStyle: React.CSSProperties = {
-    left: centerX,
-    top: isUp ? top - 60 : bottom + 8,
-  };
-
+  const labelWidth = 146;
   const sign = priceDiff >= 0 ? "+" : "";
   const pctSign = pctChange >= 0 ? "+" : "";
 
@@ -74,8 +66,6 @@ export function MeasureOverlay({
             <path d="M 0 0 L 10 5 L 0 10 z" fill={stroke} />
           </marker>
         </defs>
-
-        {/* Rectángulo del rango */}
         <rect
           x={left}
           y={top}
@@ -84,40 +74,34 @@ export function MeasureOverlay({
           fill={fill}
           stroke={stroke}
           strokeWidth={1}
-          strokeDasharray={isPreview ? "4,3" : undefined}
+          strokeDasharray={isPreview ? "4 3" : undefined}
         />
-
-        {/* Línea horizontal de referencia al precio A */}
         <line
           x1={left}
           x2={right}
-          y1={aY}
-          y2={aY}
+          y1={centerY}
+          y2={centerY}
           stroke={stroke}
           strokeWidth={1}
-          strokeDasharray="2,3"
-          opacity={0.7}
+          markerEnd={`url(#${markerId})`}
         />
-
-        {/* Flecha vertical en el centro indicando dirección */}
         <line
           x1={centerX}
           x2={centerX}
-          y1={aY}
-          y2={bY}
+          y1={top}
+          y2={bottom}
           stroke={stroke}
-          strokeWidth={1.5}
+          strokeWidth={1}
           markerEnd={`url(#${markerId})`}
         />
       </svg>
-
       <div
-        className="pointer-events-none absolute z-20 -translate-x-1/2 whitespace-nowrap rounded border px-2 py-1 text-center text-[11px] font-medium leading-tight tabular-nums shadow-md"
+        className="pointer-events-none absolute z-20 rounded px-2 py-1.5 text-center text-[11px] font-semibold leading-tight tabular-nums text-white shadow-md"
         style={{
-          ...labelStyle,
+          left: Math.max(8, centerX - labelWidth / 2),
+          top: bottom + 10,
+          width: labelWidth,
           backgroundColor: stroke,
-          borderColor: stroke,
-          color: "#ffffff",
         }}
       >
         <div>
@@ -125,10 +109,9 @@ export function MeasureOverlay({
           {formatPrice(priceDiff)} ({pctSign}
           {pctChange.toFixed(2)}%)
         </div>
-        <div className="opacity-90">
-          {bars} barras · {durationText}
+        <div className="mt-1 opacity-95">
+          {bars} barras, {durationText}
         </div>
-        <div className="opacity-90">Vol {formatVolume(volume)}</div>
       </div>
     </>
   );
