@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, MoreHorizontal } from "lucide-react";
 import { useChartStore } from "@/lib/store/chart-store";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { isCryptoSymbol } from "@/lib/market/data";
 import { cn } from "@/lib/utils";
 
@@ -439,7 +440,11 @@ export function OrderbookPanel() {
     );
   }
 
-  return <LiveCryptoOrderbook key={binanceSymbol} symbol={binanceSymbol} />;
+  return (
+    <ErrorBoundary>
+      <LiveCryptoOrderbook key={binanceSymbol} symbol={binanceSymbol} />
+    </ErrorBoundary>
+  );
 }
 
 function LiveCryptoOrderbook({ symbol }: { symbol: string }) {
