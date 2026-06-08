@@ -495,25 +495,29 @@ function LiveCryptoOrderbook({ symbol }: { symbol: string }) {
       const wsUrl = getOrderflowWsUrl(symbol);
       if (!wsUrl || cancelled) return;
 
-      ws = new WebSocket(wsUrl);
-      ws.onmessage = (event) => {
-        try {
-          applyPayload(JSON.parse(event.data) as {
-            buckets?: Array<[number, number, number, number, number]>;
-            rows?: unknown;
-          });
-        } catch {
-          // Ignore malformed websocket payloads.
-        }
-      };
-      ws.onclose = () => {
-        if (!cancelled) {
-          reconnectTimer = window.setTimeout(connectWs, 1500);
-        }
-      };
-      ws.onerror = () => {
-        ws?.close();
-      };
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            applyPayload(JSON.parse(event.data) as {
+              buckets?: Array<[number, number, number, number, number]>;
+              rows?: unknown;
+            });
+          } catch {
+            // Ignore malformed websocket payloads.
+          }
+        };
+        ws.onclose = () => {
+          if (!cancelled) {
+            reconnectTimer = window.setTimeout(connectWs, 1500);
+          }
+        };
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch (error) {
+        console.error("WebSocket connection error:", error);
+      }
     };
 
     connectWs();
@@ -535,7 +539,7 @@ function LiveCryptoOrderbook({ symbol }: { symbol: string }) {
     let lastUpdateId = 0;
     let bidBook = new Map<number, number>();
     let askBook = new Map<number, number>();
-    const ws = new WebSocket(url);
+    let ws: WebSocket | null = null;
 
     fetch(`${BINANCE_REST_BASE}/api/v3/depth?symbol=${symbol}&limit=1000`)
       .then((response) => response.json() as Promise<DepthSnapshot>)
@@ -553,56 +557,61 @@ function LiveCryptoOrderbook({ symbol }: { symbol: string }) {
           snapshotReady = false;
         }
       });
+    
+    try {
+      ws = new WebSocket(url);
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => setConnected(false);
+      ws.onerror = () => {
+        setConnected(false);
+        ws?.close();
+      };
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as BinanceStreamMessage;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => {
-      setConnected(false);
-      ws.close();
-    };
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data) as BinanceStreamMessage;
+          if (isDepthMessage(message)) {
+            if (!snapshotReady || message.data.u <= lastUpdateId) return;
 
-        if (isDepthMessage(message)) {
-          if (!snapshotReady || message.data.u <= lastUpdateId) return;
+            applyLevelUpdates(bidBook, message.data.b);
+            applyLevelUpdates(askBook, message.data.a);
+            lastUpdateId = message.data.u;
+            setBids(sortedLevels(bidBook, "bid"));
+            setAsks(sortedLevels(askBook, "ask"));
+            return;
+          }
 
-          applyLevelUpdates(bidBook, message.data.b);
-          applyLevelUpdates(askBook, message.data.a);
-          lastUpdateId = message.data.u;
-          setBids(sortedLevels(bidBook, "bid"));
-          setAsks(sortedLevels(askBook, "ask"));
-          return;
+          if (isAggTradeMessage(message)) {
+            const price = Number(message.data.p);
+            const quantity = Number(message.data.q);
+            if (price <= 0 || quantity <= 0) return;
+
+            const side: LiveTrade["side"] = message.data.m ? "sell" : "buy";
+            const quote = price * quantity;
+            setLastSide(side);
+            setTrades((current) => [
+              {
+                id: message.data.a,
+                price,
+                quantity,
+                quote,
+                time: message.data.T,
+                side,
+              },
+              ...current,
+            ].slice(0, MAX_TRADES));
+          }
+        } catch {
+          // Ignore malformed stream payloads.
         }
-
-        if (isAggTradeMessage(message)) {
-          const price = Number(message.data.p);
-          const quantity = Number(message.data.q);
-          if (price <= 0 || quantity <= 0) return;
-
-          const side: LiveTrade["side"] = message.data.m ? "sell" : "buy";
-          const quote = price * quantity;
-          setLastSide(side);
-          setTrades((current) => [
-            {
-              id: message.data.a,
-              price,
-              quantity,
-              quote,
-              time: message.data.T,
-              side,
-            },
-            ...current,
-          ].slice(0, MAX_TRADES));
-        }
-      } catch {
-        // Ignore malformed stream payloads.
-      }
-    };
+      };
+    } catch (error) {
+      console.error("Binance WebSocket initialization error:", error);
+    }
 
     return () => {
       closed = true;
-      ws.close();
+      ws?.close();
     };
   }, [bucket, symbol]);
 
