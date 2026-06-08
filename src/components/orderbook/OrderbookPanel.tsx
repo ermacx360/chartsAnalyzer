@@ -421,8 +421,8 @@ function LevelRow({
 }
 
 export function OrderbookPanel() {
-  const symbol = useChartStore((s) => s.symbol);
-  const binanceSymbol = symbol.toUpperCase();
+  const rawSymbol = useChartStore((s) => s.symbol);
+  const binanceSymbol = (rawSymbol.includes(":") ? rawSymbol.split(":")[1] : rawSymbol).toUpperCase();
   const supported = isCryptoSymbol(binanceSymbol) && binanceSymbol.endsWith("USDT");
 
   if (!supported) {
@@ -536,8 +536,8 @@ function LiveCryptoOrderbook({ symbol }: { symbol: string }) {
       .then((response) => response.json() as Promise<DepthSnapshot>)
       .then((snapshot) => {
         if (closed) return;
-        bidBook = levelsToMap(snapshot.bids);
-        askBook = levelsToMap(snapshot.asks);
+        bidBook = levelsToMap(snapshot.bids || []);
+        askBook = levelsToMap(snapshot.asks || []);
         lastUpdateId = snapshot.lastUpdateId;
         snapshotReady = true;
         setBids(sortedLevels(bidBook, "bid"));
