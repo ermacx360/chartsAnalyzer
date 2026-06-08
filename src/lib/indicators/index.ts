@@ -116,3 +116,102 @@ export function macd(
   void slowStartTime;
   return out;
 }
+
+export interface VwapBandsOptions {
+  anchor: "Session" | "Week" | "Month" | "Year";
+  calcMode: "Standard Deviation" | "Percentage";
+  showBand1: boolean;
+  bandMult1: number;
+  showBand2: boolean;
+  bandMult2: number;
+  showBand3: boolean;
+  bandMult3: number;
+}
+
+export interface VwapBandsPoint {
+  time: number;
+  vwap: number;
+  upper1?: number;
+  lower1?: number;
+  upper2?: number;
+  lower2?: number;
+  upper3?: number;
+  lower3?: number;
+}
+
+/**
+ * Volume Weighted Average Price (VWAP) with Bands
+ * Matches TradingView's VWAP algorithm with Standard Deviation or Percentage bands.
+ */
+export function vwapBands(candles: Candle[], config: VwapBandsOptions): VwapBandsPoint[] {
+  const out: VwapBandsPoint[] = [];
+  if (candles.length === 0) return out;
+
+  let sumPv = 0;
+  let sumV = 0;
+  let sumP2v = 0;
+  let currentPeriod = -1;
+
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    
+    const date = new Date(c.time * 1000);
+    let period = -1;
+    if (config.anchor === "Session") {
+      period = Math.floor(c.time / 86400);
+    } else if (config.anchor === "Week") {
+      // Offset by 345600 seconds to align weeks with Monday instead of Thursday
+      period = Math.floor((c.time - 345600) / 604800);
+    } else if (config.anchor === "Month") {
+      period = date.getUTCFullYear() * 12 + date.getUTCMonth();
+    } else if (config.anchor === "Year") {
+      period = date.getUTCFullYear();
+    }
+
+    if (period !== currentPeriod) {
+      sumPv = 0;
+      sumV = 0;
+      sumP2v = 0;
+      currentPeriod = period;
+    }
+
+    const typicalPrice = (c.high + c.low + c.close) / 3;
+    sumPv += typicalPrice * c.volume;
+    sumV += c.volume;
+    sumP2v += typicalPrice * typicalPrice * c.volume;
+
+    if (sumV === 0) {
+      out.push({ time: c.time, vwap: typicalPrice });
+      continue;
+    }
+
+    const currentVwap = sumPv / sumV;
+    const point: VwapBandsPoint = { time: c.time, vwap: currentVwap };
+
+    let bandBasis = 0;
+    if (config.calcMode === "Percentage") {
+      bandBasis = currentVwap * 0.01;
+    } else {
+      const variance = (sumP2v / sumV) - (currentVwap * currentVwap);
+      const stdev = Math.sqrt(Math.max(0, variance));
+      bandBasis = stdev;
+    }
+
+    if (config.showBand1) {
+      point.upper1 = currentVwap + bandBasis * config.bandMult1;
+      point.lower1 = currentVwap - bandBasis * config.bandMult1;
+    }
+    if (config.showBand2) {
+      point.upper2 = currentVwap + bandBasis * config.bandMult2;
+      point.lower2 = currentVwap - bandBasis * config.bandMult2;
+    }
+    if (config.showBand3) {
+      point.upper3 = currentVwap + bandBasis * config.bandMult3;
+      point.lower3 = currentVwap - bandBasis * config.bandMult3;
+    }
+
+    out.push(point);
+  }
+
+  return out;
+}

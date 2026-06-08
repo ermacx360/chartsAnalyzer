@@ -17,20 +17,23 @@ import {
   type EmaCrossLineStyle,
   type IndicatorConfig,
   type IndicatorKey,
+  type MonthlyGannConfig,
   type RsiSettingsConfig,
   type RsiMaType,
+  type VolumeConfig,
   type VolumeProfileConfig,
 } from "@/lib/store/chart-store";
 
 const TITLES: Record<IndicatorKey, string> = {
-  ema20: "EMA — Slot 1",
-  ema50: "EMA — Slot 2",
-  ema200: "EMA — Slot 3",
   emaCross: "EMA Cross",
+  emaCross2: "EMA Cross 7/25",
   rsi: "RSI",
   macd: "MACD",
   volume: "Volumen",
   volumeProfile: "Volume Profile Visible Range",
+  vwapBands: "VWAP + Bandas",
+  liquidityBlocks: "Bloques de Liquidez",
+  monthlyGann: "Gann mensual",
   swingPatterns: "Swing Highs/Lows & Candle Patterns",
   pmRangeBreakout: "PM Range Breakout PRO",
   sqzAdxTtm: "SQZ + ADX + TTM",
@@ -73,6 +76,7 @@ export function IndicatorSettingsDialog() {
       <DialogContent
         className={
           target === "emaCross" ||
+          target === "emaCross2" ||
           target === "pmRangeBreakout" ||
           target === "sqzAdxTtm"
             ? "max-h-[85vh] max-w-xl overflow-y-auto bg-tv-panel"
@@ -114,27 +118,30 @@ interface FormProps {
 function SettingsForm({ target, config, onSave, onReset }: FormProps) {
   // Local draft state to avoid recalculating chart on every keystroke
   const [draft, setDraft] = useState(() => ({
-    ema20: config.ema20,
-    ema50: config.ema50,
-    ema200: config.ema200,
     rsi: config.rsi,
     rsiSettings: { ...config.rsiSettings },
     macdFast: config.macdFast,
     macdSlow: config.macdSlow,
     macdSignal: config.macdSignal,
+    volume: { ...config.volume },
     volumeProfile: { ...config.volumeProfile },
+    monthlyGann: { ...config.monthlyGann },
     emaCross: cloneEmaCrossConfig(config.emaCross),
     emaCrossFill: cloneEmaCrossFillConfig(config.emaCrossFill),
+    emaCross2: cloneEmaCrossConfig(config.emaCross2, DEFAULT_CONFIG.emaCross2),
+    emaCross2Fill: cloneEmaCrossFillConfig(
+      config.emaCross2Fill,
+      DEFAULT_CONFIG.emaCross2Fill,
+    ),
     swingPatterns: { ...config.swingPatterns },
     pmRangeBreakout: { ...config.pmRangeBreakout },
-    sqzAdxTtm: { ...config.sqzAdxTtm },
+    sqzAdxTtm: { ...DEFAULT_CONFIG.sqzAdxTtm, ...config.sqzAdxTtm },
+    vwapBands: { ...DEFAULT_CONFIG.vwapBands, ...(config.vwapBands || {}) },
+    liquidityBlocks: { ...DEFAULT_CONFIG.liquidityBlocks, ...(config.liquidityBlocks || {}) },
   }));
 
   function save() {
-    if (target === "ema20") onSave({ ema20: clamp(draft.ema20, 2, 500) });
-    else if (target === "ema50") onSave({ ema50: clamp(draft.ema50, 2, 500) });
-    else if (target === "ema200") onSave({ ema200: clamp(draft.ema200, 2, 500) });
-    else if (target === "rsi")
+    if (target === "rsi")
       onSave({
         rsi: clamp(draft.rsi, 1, 100),
         rsiSettings: {
@@ -175,9 +182,37 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
           color: normalizeColor(line.color, DEFAULT_CONFIG.emaCross[index].color),
           lineStyle: line.lineStyle,
         })),
-        emaCrossFill: normalizeEmaCrossFillConfig(draft.emaCrossFill),
+        emaCrossFill: normalizeEmaCrossFillConfig(
+          draft.emaCrossFill,
+          DEFAULT_CONFIG.emaCross,
+          DEFAULT_CONFIG.emaCrossFill,
+        ),
       });
-    else if (target === "volume") onSave({});
+    else if (target === "emaCross2")
+      onSave({
+        emaCross2: draft.emaCross2.map((line, index) => ({
+          enabled: line.enabled,
+          period: clamp(line.period, 2, 2000),
+          color: normalizeColor(line.color, DEFAULT_CONFIG.emaCross2[index].color),
+          lineStyle: line.lineStyle,
+        })),
+        emaCross2Fill: normalizeEmaCrossFillConfig(
+          draft.emaCross2Fill,
+          DEFAULT_CONFIG.emaCross2,
+          DEFAULT_CONFIG.emaCross2Fill,
+        ),
+      });
+    else if (target === "volume")
+      onSave({
+        volume: {
+          heightPct: clamp(draft.volume.heightPct, 12, 45),
+          ema20Enabled: draft.volume.ema20Enabled,
+          ema20Color: normalizeColor(
+            draft.volume.ema20Color,
+            DEFAULT_CONFIG.volume.ema20Color,
+          ),
+        },
+      });
     else if (target === "volumeProfile")
       onSave({
         volumeProfile: {
@@ -196,6 +231,30 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
             draft.volumeProfile.pocColor,
             DEFAULT_CONFIG.volumeProfile.pocColor,
           ),
+        },
+      });
+    else if (target === "monthlyGann")
+      onSave({
+        monthlyGann: {
+          startDate: normalizeDateInput(draft.monthlyGann.startDate),
+          endDate: normalizeDateInput(draft.monthlyGann.endDate),
+          topPriceOverride: normalizeOptionalNumber(
+            draft.monthlyGann.topPriceOverride,
+          ),
+          bottomPriceOverride: normalizeOptionalNumber(
+            draft.monthlyGann.bottomPriceOverride,
+          ),
+          color: normalizeColor(
+            draft.monthlyGann.color,
+            DEFAULT_CONFIG.monthlyGann.color,
+          ),
+          fillColor: normalizeColor(
+            draft.monthlyGann.fillColor,
+            DEFAULT_CONFIG.monthlyGann.fillColor,
+          ),
+          opacity: clamp(draft.monthlyGann.opacity, 0, 40),
+          lineOpacity: clamp(draft.monthlyGann.lineOpacity, 0, 100),
+          showLabels: draft.monthlyGann.showLabels,
         },
       });
     else if (target === "swingPatterns")
@@ -264,6 +323,36 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
           waveCLength: clamp(draft.sqzAdxTtm.waveCLength, 1, 500),
         },
       });
+    else if (target === "vwapBands")
+      onSave({
+        vwapBands: {
+          anchor: draft.vwapBands.anchor,
+          calcMode: draft.vwapBands.calcMode,
+          showBand1: draft.vwapBands.showBand1,
+          bandMult1: draft.vwapBands.bandMult1,
+          showBand2: draft.vwapBands.showBand2,
+          bandMult2: draft.vwapBands.bandMult2,
+          showBand3: draft.vwapBands.showBand3,
+          bandMult3: draft.vwapBands.bandMult3,
+          color: normalizeColor(draft.vwapBands.color, DEFAULT_CONFIG.vwapBands.color),
+          band1Color: normalizeColor(draft.vwapBands.band1Color, DEFAULT_CONFIG.vwapBands.band1Color),
+          band2Color: normalizeColor(draft.vwapBands.band2Color, DEFAULT_CONFIG.vwapBands.band2Color),
+          band3Color: normalizeColor(draft.vwapBands.band3Color, DEFAULT_CONFIG.vwapBands.band3Color),
+          opacity: clamp(draft.vwapBands.opacity ?? 1, 0.1, 1),
+          lineWidth: clamp(draft.vwapBands.lineWidth ?? 1, 1, 5),
+        },
+      });
+    else if (target === "liquidityBlocks")
+      onSave({
+        liquidityBlocks: {
+          bucketPct: clamp(draft.liquidityBlocks.bucketPct, 0.01, 5),
+          topBlocks: clamp(draft.liquidityBlocks.topBlocks, 1, 50),
+          minVolumeUsdt: clamp(draft.liquidityBlocks.minVolumeUsdt, 1000, 1000000000),
+          opacity: clamp(draft.liquidityBlocks.opacity, 0.1, 1),
+          buyColor: normalizeColor(draft.liquidityBlocks.buyColor, DEFAULT_CONFIG.liquidityBlocks.buyColor),
+          sellColor: normalizeColor(draft.liquidityBlocks.sellColor, DEFAULT_CONFIG.liquidityBlocks.sellColor),
+        },
+      });
   }
 
   function updateEmaCrossLine(
@@ -285,15 +374,27 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
     }));
   }
 
+  function updateEmaCross2Line(
+    index: number,
+    patch: Partial<EmaCrossLineConfig>,
+  ) {
+    setDraft((current) => ({
+      ...current,
+      emaCross2: current.emaCross2.map((line, lineIndex) =>
+        lineIndex === index ? { ...line, ...patch } : line,
+      ),
+    }));
+  }
+
+  function updateEmaCross2Fill(patch: Partial<EmaCrossFillConfig>) {
+    setDraft((current) => ({
+      ...current,
+      emaCross2Fill: { ...current.emaCross2Fill, ...patch },
+    }));
+  }
+
   return (
     <div className="flex flex-col gap-3">
-      {(target === "ema20" || target === "ema50" || target === "ema200") && (
-        <Field
-          label="Período"
-          value={draft[target]}
-          onChange={(n) => setDraft((d) => ({ ...d, [target]: n }))}
-        />
-      )}
       {false && target === "rsi" && (
         <Field
           label="Período"
@@ -404,11 +505,89 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
           </div>
         </div>
       )}
+      {target === "emaCross2" && (
+        <div className="flex flex-col gap-2">
+          {draft.emaCross2.map((line, index) => (
+            <div
+              key={index}
+              className="grid grid-cols-[24px_56px_1fr_150px] items-end gap-2"
+            >
+              <label className="flex h-8 items-center justify-center rounded-lg border border-input bg-tv-bg">
+                <input
+                  aria-label={`Activar EMA ${index + 1}`}
+                  type="checkbox"
+                  checked={line.enabled}
+                  onChange={(event) =>
+                    updateEmaCross2Line(index, { enabled: event.target.checked })
+                  }
+                  className="h-3.5 w-3.5 accent-tv-blue"
+                />
+              </label>
+              <Field
+                label={`EMA ${index + 1}`}
+                value={line.period}
+                onChange={(n) => updateEmaCross2Line(index, { period: n })}
+                max={2000}
+              />
+              <ColorField
+                value={line.color}
+                fallback={DEFAULT_CONFIG.emaCross2[index].color}
+                onChange={(color) => updateEmaCross2Line(index, { color })}
+              />
+              <LineStyleField
+                value={line.lineStyle}
+                onChange={(lineStyle) =>
+                  updateEmaCross2Line(index, { lineStyle })
+                }
+              />
+            </div>
+          ))}
+          <div className="mt-2 border-t border-tv-border pt-3">
+            <label className="flex items-center gap-2 text-xs text-tv-text">
+              <input
+                type="checkbox"
+                checked={draft.emaCross2Fill.enabled}
+                onChange={(e) => updateEmaCross2Fill({ enabled: e.target.checked })}
+                className="h-3.5 w-3.5 accent-tv-blue"
+              />
+              <span>Colorear zona entre EMAs</span>
+            </label>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <FillLineField
+                label="Desde"
+                value={draft.emaCross2Fill.from}
+                lines={draft.emaCross2}
+                onChange={(from) => updateEmaCross2Fill({ from })}
+              />
+              <FillLineField
+                label="Hasta"
+                value={draft.emaCross2Fill.to}
+                lines={draft.emaCross2}
+                onChange={(to) => updateEmaCross2Fill({ to })}
+              />
+              <ColorField
+                value={draft.emaCross2Fill.color}
+                fallback={DEFAULT_CONFIG.emaCross2Fill.color}
+                onChange={(color) => updateEmaCross2Fill({ color })}
+              />
+              <OpacityField
+                value={draft.emaCross2Fill.opacity}
+                onChange={(opacity) => updateEmaCross2Fill({ opacity })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {target === "volume" && (
-        <p className="text-xs text-tv-text-muted">
-          El indicador de volumen no tiene parámetros configurables en esta
-          versión.
-        </p>
+        <VolumeFields
+          settings={draft.volume}
+          onSettingsChange={(patch) =>
+            setDraft((d) => ({
+              ...d,
+              volume: { ...d.volume, ...patch },
+            }))
+          }
+        />
       )}
       {target === "volumeProfile" && (
         <VolumeProfileFields
@@ -417,6 +596,17 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
             setDraft((d) => ({
               ...d,
               volumeProfile: { ...d.volumeProfile, ...patch },
+            }))
+          }
+        />
+      )}
+      {target === "monthlyGann" && (
+        <MonthlyGannFields
+          settings={draft.monthlyGann}
+          onSettingsChange={(patch) =>
+            setDraft((d) => ({
+              ...d,
+              monthlyGann: { ...d.monthlyGann, ...patch },
             }))
           }
         />
@@ -568,6 +758,167 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
           <Field label="Wave A Length" value={draft.sqzAdxTtm.waveALength} min={1} max={500} onChange={(waveALength) => setDraft((d) => ({ ...d, sqzAdxTtm: { ...d.sqzAdxTtm, waveALength } }))} />
           <Field label="Wave B Length" value={draft.sqzAdxTtm.waveBLength} min={1} max={500} onChange={(waveBLength) => setDraft((d) => ({ ...d, sqzAdxTtm: { ...d.sqzAdxTtm, waveBLength } }))} />
           <Field label="Wave C Length" value={draft.sqzAdxTtm.waveCLength} min={1} max={500} onChange={(waveCLength) => setDraft((d) => ({ ...d, sqzAdxTtm: { ...d.sqzAdxTtm, waveCLength } }))} />
+        </div>
+      )}
+      {target === "vwapBands" && (
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-xs text-tv-text-muted">Anclaje</label>
+              <select
+                className="w-full rounded border border-tv-border bg-tv-bg px-2 py-1 text-sm outline-none focus:border-tv-primary"
+                value={draft.vwapBands.anchor}
+                onChange={(e) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, anchor: e.target.value as any } }))}
+              >
+                <option value="Session">Sesión (Día)</option>
+                <option value="Week">Semana</option>
+                <option value="Month">Mes</option>
+                <option value="Year">Año</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-tv-text-muted">Modo de cálculo</label>
+              <select
+                className="w-full rounded border border-tv-border bg-tv-bg px-2 py-1 text-sm outline-none focus:border-tv-primary"
+                value={draft.vwapBands.calcMode}
+                onChange={(e) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, calcMode: e.target.value as any } }))}
+              >
+                <option value="Standard Deviation">Desviación Estándar</option>
+                <option value="Percentage">Porcentaje</option>
+              </select>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <span className="w-16 text-sm text-tv-text">VWAP</span>
+            <ColorField
+              value={draft.vwapBands.color}
+              fallback={DEFAULT_CONFIG.vwapBands.color}
+              onChange={(color) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, color } }))}
+            />
+          </div>
+
+          {[1, 2, 3].map((i) => {
+            const num = i as 1 | 2 | 3;
+            const showKey = `showBand${num}` as const;
+            const multKey = `bandMult${num}` as const;
+            const colorKey = `band${num}Color` as const;
+            
+            return (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={draft.vwapBands[showKey]}
+                  onChange={(e) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, [showKey]: e.target.checked } }))}
+                />
+                <span className="w-20 text-sm text-tv-text">Banda {num}</span>
+                <ColorField
+                  value={draft.vwapBands[colorKey]}
+                  fallback={DEFAULT_CONFIG.vwapBands[colorKey]}
+                  onChange={(c) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, [colorKey]: c } }))}
+                />
+                <Field
+                  label=""
+                  value={draft.vwapBands[multKey]}
+                  min={0.1}
+                  max={100}
+                  onChange={(v) => setDraft((d) => ({ ...d, vwapBands: { ...d.vwapBands, [multKey]: v } }))}
+                />
+              </div>
+            );
+          })}
+          <div className="flex flex-col gap-1 mt-2">
+            <div className="flex justify-between items-center text-xs">
+              <label className="text-tv-text-muted">Opacidad (Líneas)</label>
+              <span className="text-tv-text font-mono">
+                {Math.round((draft.vwapBands.opacity ?? 1) * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              className="w-full cursor-pointer accent-tv-primary"
+              value={draft.vwapBands.opacity ?? 1}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  vwapBands: { ...d.vwapBands, opacity: parseFloat(e.target.value) },
+                }))
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-1 mt-2">
+            <div className="flex justify-between items-center text-xs">
+              <label className="text-tv-text-muted">Grosor (Líneas)</label>
+              <span className="text-tv-text font-mono">
+                {Math.round(draft.vwapBands.lineWidth ?? 1)}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="1"
+              className="w-full cursor-pointer accent-tv-primary"
+              value={draft.vwapBands.lineWidth ?? 1}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  vwapBands: { ...d.vwapBands, lineWidth: parseInt(e.target.value) },
+                }))
+              }
+            />
+          </div>
+        </div>
+      )}
+      {target === "liquidityBlocks" && (
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+            <span className="w-24 text-sm text-tv-text">Color de Compra</span>
+            <ColorField
+              value={draft.liquidityBlocks.buyColor}
+              fallback={DEFAULT_CONFIG.liquidityBlocks.buyColor}
+              onChange={(c) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, buyColor: c } }))}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-24 text-sm text-tv-text">Color de Venta</span>
+            <ColorField
+              value={draft.liquidityBlocks.sellColor}
+              fallback={DEFAULT_CONFIG.liquidityBlocks.sellColor}
+              onChange={(c) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, sellColor: c } }))}
+            />
+          </div>
+          <Field
+            label="Opacidad base"
+            value={draft.liquidityBlocks.opacity}
+            min={0.1}
+            max={1}
+            onChange={(opacity) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, opacity } }))}
+          />
+          <Field
+            label="Volumen Mínimo (Millones USDT)"
+            value={draft.liquidityBlocks.minVolumeUsdt / 1_000_000}
+            min={0.01}
+            max={1000}
+            onChange={(val) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, minVolumeUsdt: val * 1_000_000 } }))}
+          />
+          <Field
+            label="Máximos bloques (Top N)"
+            value={draft.liquidityBlocks.topBlocks}
+            min={1}
+            max={50}
+            onChange={(topBlocks) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, topBlocks } }))}
+          />
+          <Field
+            label="Agrupación de precio (%)"
+            value={draft.liquidityBlocks.bucketPct}
+            min={0.01}
+            max={5}
+            onChange={(bucketPct) => setDraft((d) => ({ ...d, liquidityBlocks: { ...d.liquidityBlocks, bucketPct } }))}
+          />
         </div>
       )}
 
@@ -776,6 +1127,43 @@ function RsiSettingsFields({
   );
 }
 
+function VolumeFields({
+  settings,
+  onSettingsChange,
+}: {
+  settings: VolumeConfig;
+  onSettingsChange: (patch: Partial<VolumeConfig>) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field
+        label="Altura %"
+        value={settings.heightPct}
+        min={12}
+        max={45}
+        onChange={(heightPct) => onSettingsChange({ heightPct })}
+      />
+      <label className="flex h-8 items-center gap-2 rounded-lg border border-input bg-tv-bg px-2 text-xs text-tv-text">
+        <input
+          type="checkbox"
+          checked={settings.ema20Enabled}
+          onChange={(event) =>
+            onSettingsChange({ ema20Enabled: event.target.checked })
+          }
+          className="h-3.5 w-3.5 accent-tv-blue"
+        />
+        <span>EMA 20 del volumen</span>
+      </label>
+      <ColorField
+        label="Color EMA 20"
+        value={settings.ema20Color}
+        fallback={DEFAULT_CONFIG.volume.ema20Color}
+        onChange={(ema20Color) => onSettingsChange({ ema20Color })}
+      />
+    </div>
+  );
+}
+
 function VolumeProfileFields({
   settings,
   onSettingsChange,
@@ -825,6 +1213,90 @@ function VolumeProfileFields({
         onChange={(pocColor) => onSettingsChange({ pocColor })}
       />
     </div>
+  );
+}
+
+function MonthlyGannFields({
+  settings,
+  onSettingsChange,
+}: {
+  settings: MonthlyGannConfig;
+  onSettingsChange: (patch: Partial<MonthlyGannConfig>) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <DateField
+        label="Inicio"
+        value={settings.startDate}
+        onChange={(startDate) => onSettingsChange({ startDate })}
+      />
+      <DateField
+        label="Fin"
+        value={settings.endDate}
+        onChange={(endDate) => onSettingsChange({ endDate })}
+      />
+      <Field
+        label="Relleno"
+        value={settings.opacity}
+        min={0}
+        max={40}
+        onChange={(opacity) => onSettingsChange({ opacity })}
+      />
+      <Field
+        label="Lineas"
+        value={settings.lineOpacity}
+        min={0}
+        max={100}
+        onChange={(lineOpacity) => onSettingsChange({ lineOpacity })}
+      />
+      <label className="flex h-8 items-center gap-2 rounded-lg border border-input bg-tv-bg px-2 text-xs text-tv-text">
+        <input
+          type="checkbox"
+          checked={settings.showLabels}
+          onChange={(event) =>
+            onSettingsChange({ showLabels: event.target.checked })
+          }
+          className="h-3.5 w-3.5 accent-tv-blue"
+        />
+        <span>Etiquetas</span>
+      </label>
+      <ColorField
+        label="Lineas"
+        value={settings.color}
+        fallback={DEFAULT_CONFIG.monthlyGann.color}
+        onChange={(color) => onSettingsChange({ color })}
+      />
+      <ColorField
+        label="Fondo"
+        value={settings.fillColor}
+        fallback={DEFAULT_CONFIG.monthlyGann.fillColor}
+        onChange={(fillColor) => onSettingsChange({ fillColor })}
+      />
+    </div>
+  );
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-tv-text-muted">
+        {label}
+      </span>
+      <Input
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 bg-tv-bg text-xs text-tv-text"
+      />
+    </label>
   );
 }
 
@@ -953,23 +1425,33 @@ function LineStyleField({
   );
 }
 
-function cloneEmaCrossConfig(config: EmaCrossLineConfig[]) {
-  return DEFAULT_CONFIG.emaCross.map((fallback, index) => ({
+function cloneEmaCrossConfig(
+  config: EmaCrossLineConfig[],
+  defaults = DEFAULT_CONFIG.emaCross,
+) {
+  return defaults.map((fallback, index) => ({
     ...fallback,
-    ...config[index],
+    ...config?.[index],
     enabled: config[index]?.enabled ?? fallback.enabled,
   }));
 }
 
-function cloneEmaCrossFillConfig(config: EmaCrossFillConfig) {
+function cloneEmaCrossFillConfig(
+  config: EmaCrossFillConfig,
+  defaults = DEFAULT_CONFIG.emaCrossFill,
+) {
   return {
-    ...DEFAULT_CONFIG.emaCrossFill,
+    ...defaults,
     ...config,
   };
 }
 
-function normalizeEmaCrossFillConfig(config: EmaCrossFillConfig) {
-  const maxLineIndex = DEFAULT_CONFIG.emaCross.length - 1;
+function normalizeEmaCrossFillConfig(
+  config: EmaCrossFillConfig,
+  lines = DEFAULT_CONFIG.emaCross,
+  defaults = DEFAULT_CONFIG.emaCrossFill,
+) {
+  const maxLineIndex = lines.length - 1;
   const from = clamp(config.from, 0, maxLineIndex);
   const rawTo = clamp(config.to, 0, maxLineIndex);
   const to =
@@ -983,7 +1465,7 @@ function normalizeEmaCrossFillConfig(config: EmaCrossFillConfig) {
     enabled: config.enabled,
     from,
     to,
-    color: normalizeColor(config.color, DEFAULT_CONFIG.emaCrossFill.color),
+    color: normalizeColor(config.color, defaults.color),
     opacity: clamp(config.opacity, 0, 100),
   };
 }
@@ -997,6 +1479,14 @@ function normalizeSessionInput(value: string, fallback: string): string {
   return /^([01]\d|2[0-3])[0-5]\d-([01]\d|2[0-3])[0-5]\d$/.test(normalized)
     ? normalized
     : fallback;
+}
+
+function normalizeDateInput(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+}
+
+function normalizeOptionalNumber(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function clamp(n: number, min: number, max: number): number {

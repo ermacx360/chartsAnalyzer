@@ -7,12 +7,16 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import type { Ticker24h } from "@/lib/binance/types";
 import { fetchTickers24h } from "@/lib/market/data";
 import { INDEX_INSTRUMENTS } from "@/lib/market/indices";
-import { STOCK_INSTRUMENTS } from "@/lib/market/stocks";
+import {
+  STOCK_INSTRUMENTS,
+  TOP_100_STOCK_INSTRUMENTS,
+} from "@/lib/market/stocks";
 
-type HeatmapMode = "all" | "winners" | "losers";
+type HeatmapMode = "all" | "top100" | "winners" | "losers";
 type MarketMode = "stocks" | "crypto" | "indices";
 type CryptoRankMode = "marketCap" | "volume";
 type SizeMode = "liquidity" | "price" | "equal";
+type RowsByMode = Record<HeatmapMode, HeatmapRow[]>;
 
 interface HeatmapRow {
   symbol: string;
@@ -53,6 +57,12 @@ const MARKET_LABELS: Record<MarketMode, string> = {
   stocks: "Acciones",
   crypto: "Criptos",
   indices: "Indices",
+};
+
+const REFRESH_INTERVAL_BY_MARKET: Record<MarketMode, number> = {
+  stocks: 60_000,
+  crypto: 60_000,
+  indices: 10_000,
 };
 
 const INDEX_DISPLAY_NAMES: Record<string, string> = {
@@ -105,6 +115,27 @@ const MARKET_INSTRUMENTS: Record<Exclude<MarketMode, "crypto">, MarketInstrument
     name: INDEX_DISPLAY_NAMES[index.symbol] ?? index.name,
   })),
 };
+
+const TOP_100_STOCK_MARKET_INSTRUMENTS: MarketInstrument[] =
+  TOP_100_STOCK_INSTRUMENTS.map((stock) => ({
+    symbol: stock.symbol,
+    name: stock.name,
+  }));
+
+const EMPTY_ROWS_BY_MODE: RowsByMode = {
+  all: [],
+  top100: [],
+  winners: [],
+  losers: [],
+};
+
+function createEmptyRowsByMarket(): Record<MarketMode, RowsByMode> {
+  return {
+    stocks: { ...EMPTY_ROWS_BY_MODE },
+    crypto: { ...EMPTY_ROWS_BY_MODE },
+    indices: { ...EMPTY_ROWS_BY_MODE },
+  };
+}
 
 function formatUsd(value: number) {
   if (!Number.isFinite(value) || value <= 0) return "--";
@@ -225,21 +256,28 @@ function mergeRowsBySymbol(currentRows: HeatmapRow[], nextRows: HeatmapRow[]) {
 
 export function StockHeatmap() {
   const [market, setMarket] = useState<MarketMode>("stocks");
-  const [rowsByMode, setRowsByMode] = useState<Record<HeatmapMode, HeatmapRow[]>>({
-    all: [],
-    winners: [],
-    losers: [],
-  });
+  const [rowsByMarket, setRowsByMarket] =
+    useState<Record<MarketMode, RowsByMode>>(createEmptyRowsByMarket);
   const [cryptoRankMode, setCryptoRankMode] =
     useState<CryptoRankMode>("marketCap");
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<HeatmapMode>("all");
   const [sizeMode, setSizeMode] = useState<SizeMode>("liquidity");
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [updatedAtByMarket, setUpdatedAtByMarket] = useState<
+    Record<MarketMode, Date | null>
+  >({
+    stocks: null,
+    crypto: null,
+    indices: null,
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hoveredTile, setHoveredTile] = useState<HoveredTile | null>(null);
 
-  const loadMarketRows = useCallback(async (selectedMarket = market, silent = false) => {
+  const loadMarketRows = useCallback(async (
+    selectedMarket = market,
+    silent = false,
+    selectedMode = mode,
+  ) => {
     if (!silent) {
       setLoading(true);
       setErrorMessage(null);
@@ -249,28 +287,40 @@ export function StockHeatmap() {
         const cryptoRows = await fetchCryptoHeatmapRows(cryptoRankMode);
         const nextRows = {
           all: cryptoRows.all.map((ticker) => tickerToRow(ticker)),
+          top100: [],
           winners: cryptoRows.winners.map((ticker) => tickerToRow(ticker)),
           losers: cryptoRows.losers.map((ticker) => tickerToRow(ticker)),
         };
 
-        setRowsByMode((currentRows) =>
-          silent
+        setRowsByMarket((current) => ({
+          ...current,
+          crypto: silent
             ? {
-                all: mergeRowsBySymbol(currentRows.all, nextRows.all),
-                winners: mergeRowsBySymbol(currentRows.winners, nextRows.winners),
-                losers: mergeRowsBySymbol(currentRows.losers, nextRows.losers),
+                all: mergeRowsBySymbol(current.crypto.all, nextRows.all),
+                top100: [],
+                winners: mergeRowsBySymbol(current.crypto.winners, nextRows.winners),
+                losers: mergeRowsBySymbol(current.crypto.losers, nextRows.losers),
               }
             : nextRows,
-        );
+        }));
       } else {
         const instruments = MARKET_INSTRUMENTS[selectedMarket];
+        const top100Instruments =
+          selectedMarket === "stocks" ? TOP_100_STOCK_MARKET_INSTRUMENTS : [];
+        const activeInstruments =
+          selectedMarket === "stocks" && selectedMode === "top100"
+            ? top100Instruments
+            : instruments;
+        const requestSymbols = activeInstruments.map(
+          (instrument) => instrument.symbol,
+        );
         const tickers = await fetchTickers24h(
-          instruments.map((instrument) => instrument.symbol),
+          requestSymbols,
         );
         const tickersBySymbol = new Map(
           tickers.map((ticker) => [ticker.symbol.toUpperCase(), ticker]),
         );
-        const rows = instruments.map((instrument) => {
+        const mapInstrumentToRow = (instrument: MarketInstrument) => {
           const ticker = tickersBySymbol.get(instrument.symbol.toUpperCase());
 
           return {
@@ -279,49 +329,106 @@ export function StockHeatmap() {
             price: ticker?.lastPrice ?? 0,
             changePct: ticker?.priceChangePercent ?? 0,
             volume: ticker?.quoteVolume ?? ticker?.volume ?? 0,
+            marketCap: ticker?.marketCap,
             size: getSizeValue(ticker, sizeMode),
             logoUrl:
               selectedMarket === "indices"
                 ? getIndexLogoUrl(instrument.symbol)
                 : getStockLogoUrl(instrument.symbol),
           };
-        });
+        };
+        const rows = instruments.map(mapInstrumentToRow);
+        const top100Rows =
+          selectedMarket === "stocks" && selectedMode === "top100"
+            ? top100Instruments.map(mapInstrumentToRow)
+            : [];
 
-        setRowsByMode({
-          all: rows,
-          winners: rows.filter((row) => row.changePct >= 0),
-          losers: rows.filter((row) => row.changePct < 0),
+        setRowsByMarket((current) => {
+          const currentRows = current[selectedMarket];
+
+          return {
+            ...current,
+            [selectedMarket]: {
+              all: selectedMode === "top100" ? currentRows.all : rows,
+              top100: selectedMode === "top100" ? top100Rows : currentRows.top100,
+              winners:
+                selectedMode === "top100"
+                  ? currentRows.winners
+                  : rows.filter((row) => row.changePct >= 0),
+              losers:
+                selectedMode === "top100"
+                  ? currentRows.losers
+                  : rows.filter((row) => row.changePct < 0),
+            },
+          };
         });
       }
-      setUpdatedAt(new Date());
+      setUpdatedAtByMarket((current) => ({
+        ...current,
+        [selectedMarket]: new Date(),
+      }));
     } catch {
       if (!silent) setErrorMessage("No se pudieron cargar los datos del heatmap.");
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [cryptoRankMode, market, sizeMode]);
+  }, [cryptoRankMode, market, mode, sizeMode]);
+
+  const rowsByMode = rowsByMarket[market];
+  const activeMarketHasRows =
+    (market === "stocks" && mode === "top100"
+      ? rowsByMarket.stocks.top100.length
+      : rowsByMarket[market].all.length) > 0;
+  const cryptoAllRowsCount = rowsByMarket.crypto.all.length;
 
   useEffect(() => {
+    if (activeMarketHasRows) {
+      return;
+    }
+
     const timeoutId = window.setTimeout(() => {
-      void loadMarketRows();
+      void loadMarketRows(market, false, mode);
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
-  }, [loadMarketRows]);
+  }, [activeMarketHasRows, loadMarketRows, market, mode]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      void loadMarketRows(market, true);
-    }, 60_000);
+      void loadMarketRows(market, true, mode);
+    }, REFRESH_INTERVAL_BY_MARKET[market]);
 
     return () => window.clearInterval(intervalId);
-  }, [loadMarketRows, market]);
+  }, [loadMarketRows, market, mode]);
+
+  useEffect(() => {
+    if (market !== "crypto") return;
+
+    const hasCryptoRows = cryptoAllRowsCount > 0;
+    const timeoutId = window.setTimeout(() => {
+      void loadMarketRows("crypto", hasCryptoRows, "all");
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [cryptoAllRowsCount, cryptoRankMode, loadMarketRows, market]);
+
+  useEffect(() => {
+    if (market === "crypto") return;
+
+    if (!activeMarketHasRows) return;
+    const timeoutId = window.setTimeout(() => {
+      void loadMarketRows(market, true, mode);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [activeMarketHasRows, loadMarketRows, market, mode, sizeMode]);
 
   const rows = useMemo(() => {
-    const selectedRows = rowsByMode[mode];
+    const selectedRows =
+      market === "stocks" || mode !== "top100" ? rowsByMode[mode] : [];
     const sortedRows = [...selectedRows].sort((a, b) => {
-      if (market === "crypto" && mode === "winners") return b.changePct - a.changePct;
-      if (market === "crypto" && mode === "losers") return a.changePct - b.changePct;
+      if (mode === "winners") return b.changePct - a.changePct;
+      if (mode === "losers") return a.changePct - b.changePct;
 
       return b.size - a.size;
     });
@@ -337,9 +444,10 @@ export function StockHeatmap() {
     }));
   }, [market, mode, rowsByMode]);
 
-  const marketRows = rowsByMode.all;
-  const winners = rowsByMode.winners.length;
-  const losers = rowsByMode.losers.length;
+  const marketRows = mode === "top100" ? rowsByMode.top100 : rowsByMode.all;
+  const updatedAt = updatedAtByMarket[market];
+  const winners = marketRows.filter((row) => row.changePct >= 0).length;
+  const losers = marketRows.filter((row) => row.changePct < 0).length;
   const averageChange =
     marketRows.length > 0
       ? marketRows.reduce((sum, row) => sum + row.changePct, 0) / marketRows.length
@@ -352,6 +460,12 @@ export function StockHeatmap() {
         : "Heatmap de acciones";
   const gridColumns = market === "crypto" && rows.length > 30 ? 10 : 6;
   const gridRows = Math.max(1, Math.ceil(rows.length / gridColumns));
+  const stockRankTiles = market === "stocks" && (mode === "all" || mode === "top100");
+  const indexTiles = market === "indices";
+  const modeOptions: HeatmapMode[] =
+    market === "stocks"
+      ? ["all", "top100", "winners", "losers"]
+      : ["all", "winners", "losers"];
 
   function updateHoveredTile(
     event: MouseEvent<HTMLDivElement>,
@@ -373,7 +487,7 @@ export function StockHeatmap() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#070911] text-white">
+    <div className="flex fixed inset-0 flex-col overflow-hidden bg-[#070911] text-white">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-[#0b0d17] px-4">
         <div className="flex min-w-0 items-center gap-3">
           <Link
@@ -398,7 +512,7 @@ export function StockHeatmap() {
 
         <button
           type="button"
-          onClick={() => void loadMarketRows()}
+          onClick={() => void loadMarketRows(market, false, mode)}
           className="flex h-8 items-center gap-2 rounded border border-white/10 px-2.5 text-xs text-slate-300 hover:bg-white/5 hover:text-white disabled:opacity-50"
           disabled={loading}
         >
@@ -436,9 +550,10 @@ export function StockHeatmap() {
               key={option}
               type="button"
               onClick={() => {
-                setLoading(true);
+                setLoading(rowsByMarket[option].all.length === 0);
                 setMarket(option);
                 setMode("all");
+                setHoveredTile(null);
               }}
               className={`rounded px-3 text-xs font-medium ${
                 market === option
@@ -455,12 +570,12 @@ export function StockHeatmap() {
           <div className="flex h-9 rounded border border-white/10 bg-[#0d1020] p-0.5">
             {(["marketCap", "volume"] as const).map((option) => (
               <button
-                key={option}
-                type="button"
-                onClick={() => {
-                  setLoading(true);
+              key={option}
+              type="button"
+              onClick={() => {
                   setCryptoRankMode(option);
                   setMode("all");
+                  setHoveredTile(null);
                 }}
                 className={`rounded px-3 text-xs font-medium ${
                   cryptoRankMode === option
@@ -475,7 +590,7 @@ export function StockHeatmap() {
         )}
 
         <div className="flex h-9 rounded border border-white/10 bg-[#0d1020] p-0.5">
-          {(["all", "winners", "losers"] as const).map((option) => (
+          {modeOptions.map((option) => (
             <button
               key={option}
               type="button"
@@ -487,9 +602,11 @@ export function StockHeatmap() {
               }`}
             >
               {option === "all"
-                ? market === "crypto"
+                ? market === "crypto" || market === "stocks"
                   ? "Top 50"
                   : "Todos"
+                : option === "top100"
+                  ? "Top 100"
                 : option === "winners"
                   ? market === "crypto"
                     ? "Top 30 ganadoras"
@@ -508,7 +625,6 @@ export function StockHeatmap() {
               key={option}
               type="button"
               onClick={() => {
-                setLoading(true);
                 setSizeMode(option);
               }}
               className={`rounded px-3 text-xs font-medium ${
@@ -524,20 +640,36 @@ export function StockHeatmap() {
         )}
       </div>
 
-      <main className="min-h-0 flex-1 p-2">
+      <main className={`min-h-0 flex-1 p-2 ${stockRankTiles || indexTiles ? "overflow-y-auto" : ""}`}>
         <div
-          className="grid h-full overflow-hidden rounded border border-[#05060b] bg-[#05060b]"
-          style={{
-            gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
-          }}
+          className={`grid rounded border border-[#05060b] bg-[#05060b] ${
+            stockRankTiles || indexTiles ? "h-auto min-h-full overflow-visible" : "h-full overflow-hidden"
+          }`}
+          style={
+            stockRankTiles
+              ? {
+                  gridTemplateColumns:
+                    "repeat(auto-fill, minmax(clamp(112px, 12vw, 156px), 1fr))",
+                  gridAutoRows: "clamp(112px, 12vw, 156px)",
+                }
+              : indexTiles
+                ? {
+                    gridTemplateColumns:
+                      "repeat(auto-fill, minmax(clamp(156px, 13vw, 196px), 1fr))",
+                    gridAutoRows: "clamp(142px, 11vw, 176px)",
+                  }
+              : {
+                  gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
+                }
+          }
         >
           {loading && rows.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+            <div className="col-span-full flex h-full items-center justify-center text-sm text-slate-400">
               Cargando mapa de calor...
             </div>
           ) : rows.length === 0 ? (
-            <div className="flex h-full items-center justify-center px-4 text-center text-sm text-slate-400">
+            <div className="col-span-full flex h-full items-center justify-center px-4 text-center text-sm text-slate-400">
               {errorMessage ?? "Sin datos disponibles para este filtro."}
             </div>
           ) : (
@@ -567,7 +699,7 @@ export function StockHeatmap() {
                         alt=""
                         className={
                           isIndexTile
-                            ? "mb-2 h-8 w-8 rounded-full bg-white/90 object-contain p-1"
+                            ? "mb-1.5 h-7 w-7 rounded-full bg-white/90 object-contain p-1"
                             : compact
                               ? "mb-1 h-5 w-5 rounded-full object-contain"
                               : "mb-2 h-8 w-8 rounded-full object-contain"
@@ -579,10 +711,10 @@ export function StockHeatmap() {
                     )}
                     {isIndexTile ? (
                       <>
-                        <div className="max-w-full px-2 text-balance text-xl font-bold leading-tight">
+                        <div className="max-w-full px-2 text-balance text-lg font-bold leading-[1.12]">
                           {item.name}
                         </div>
-                        <div className="mt-1 max-w-full truncate text-xs font-bold uppercase tracking-wide text-white/60">
+                        <div className="mt-1 max-w-full text-balance text-[11px] font-bold uppercase leading-tight text-white/60">
                           {symbolLabel}
                         </div>
                       </>
@@ -597,14 +729,14 @@ export function StockHeatmap() {
                         {symbolLabel}
                       </div>
                     )}
-                    <div className={compact ? "mt-1 text-base font-bold" : "mt-2 text-2xl font-bold"}>
+                    <div className={compact ? "mt-1 text-base font-bold" : isIndexTile ? "mt-1.5 text-2xl font-bold" : "mt-2 text-2xl font-bold"}>
                       {item.changePct >= 0 ? "+" : ""}
                       {item.changePct.toFixed(2)}%
                     </div>
-                    <div className={compact ? "mt-1 text-[11px] font-semibold text-white/60" : "mt-2 text-sm font-semibold text-white/60"}>
+                    <div className={compact ? "mt-1 text-[11px] font-semibold text-white/60" : isIndexTile ? "mt-1.5 text-sm font-semibold text-white/60" : "mt-2 text-sm font-semibold text-white/60"}>
                       {formatUsd(item.price)}
                     </div>
-                    <div className={compact ? "mt-0.5 text-[10px] font-semibold text-white/45" : "mt-1 text-[11px] font-semibold text-white/45"}>
+                    <div className={compact ? "mt-0.5 text-[10px] font-semibold text-white/45" : isIndexTile ? "mt-0.5 text-[11px] font-semibold text-white/45" : "mt-1 text-[11px] font-semibold text-white/45"}>
                       Vol {formatCompact(item.volume)}
                     </div>
                   </div>

@@ -9,7 +9,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Lock, LockOpen, Trash2, X } from "lucide-react";
+import { Lock, LockOpen, Settings, Trash2, X } from "lucide-react";
 import {
   createChart,
   CandlestickSeries,
@@ -36,11 +36,15 @@ import {
   isMainIndexSymbol,
 } from "@/lib/market/data";
 import { getBinanceWS } from "@/lib/binance/ws";
+import { getSimpleFxWS } from "@/lib/simplefx/ws";
+import { getIndexInstrument } from "@/lib/market/indices";
+import { getForexInstrument } from "@/lib/market/forex";
 import {
   ema,
   rsi,
   macd,
   sqzAdxTtm,
+  vwapBands,
   type IndicatorPoint,
 } from "@/lib/indicators";
 import {
@@ -52,6 +56,7 @@ import {
   DEFAULT_CONFIG,
   INDICATOR_COLORS,
   useChartStore,
+  type ChartVisualSettings,
   type EmaCrossFillConfig,
   type EmaCrossLineConfig,
   type EmaCrossLineStyle,
@@ -60,14 +65,18 @@ import {
   type DrawingPoint,
   type DrawingTool,
   type FibonacciLevelConfig,
+  type GannGridSettings,
   type IndicatorKey,
+  type MonthlyGannConfig,
   type PmRangeBreakoutConfig,
   type RsiSettingsConfig,
+  type VolumeConfig,
   type VolumeProfileConfig,
 } from "@/lib/store/chart-store";
 import { formatPrice, formatVolume } from "@/lib/format";
 import { IndicatorPill } from "./IndicatorPill";
 import { MeasureOverlay } from "./MeasureOverlay";
+import { useOrderbookBlocks } from "./useOrderbookBlocks";
 
 interface MeasurePoint {
   time: number;
@@ -187,9 +196,49 @@ const RSI_RANGE_FILL_OPACITY = 0.42;
 const RSI_LEVEL_LINE_WIDTH = 2;
 const RSI_VISIBLE_RANGE = { from: 0, to: 100 };
 const SQZ_VISIBLE_RANGE = { from: -120, to: 120 };
-
 function normalizeHexColor(color: string, fallback = TV_COLORS.bg) {
   return /^#[0-9a-fA-F]{6}$/.test(color) ? color : fallback;
+}
+
+function formatGannLevelLabel(value: number) {
+  return value === 0 || value === 1
+    ? String(value)
+    : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function getPricePrecision(symbol: string) {
+  const forex = getForexInstrument(symbol);
+
+  if (!forex) return null;
+
+  return forex.displaySymbol.endsWith("/JPY") ? 3 : 5;
+}
+
+function getPriceFormatOptions(symbol: string) {
+  const precision = getPricePrecision(symbol);
+
+  if (precision === null) return {};
+
+  return {
+    priceFormat: {
+      type: "price" as const,
+      precision,
+      minMove: 1 / 10 ** precision,
+    },
+  };
+}
+
+function formatSymbolPrice(symbol: string, value: number) {
+  const precision = getPricePrecision(symbol);
+
+  if (precision === null) return formatPrice(value);
+  if (!Number.isFinite(value)) return "--";
+
+  return value.toFixed(precision);
+}
+
+function formatDateInputFromUnix(time: number) {
+  return new Date(time * 1000).toISOString().slice(0, 10);
 }
 
 function isLightColor(color: string) {
@@ -421,16 +470,22 @@ function buildRsiSmoothing(
   return { ma, bbUpper, bbLower };
 }
 
-function getEmaCrossLines(config?: EmaCrossLineConfig[]): EmaCrossLineConfig[] {
-  return DEFAULT_CONFIG.emaCross.map((fallback, index) => ({
+function getEmaCrossLines(
+  config?: EmaCrossLineConfig[],
+  defaults = DEFAULT_CONFIG.emaCross,
+): EmaCrossLineConfig[] {
+  return defaults.map((fallback, index) => ({
     ...fallback,
     ...config?.[index],
   }));
 }
 
-function getEmaCrossFill(config?: EmaCrossFillConfig): EmaCrossFillConfig {
+function getEmaCrossFill(
+  config?: EmaCrossFillConfig,
+  defaults = DEFAULT_CONFIG.emaCrossFill,
+): EmaCrossFillConfig {
   return {
-    ...DEFAULT_CONFIG.emaCrossFill,
+    ...defaults,
     ...config,
   };
 }
@@ -544,8 +599,180 @@ function getCandleCountdown(
   );
 }
 
-function getCandleColor(candle: Candle) {
-  return candle.close >= candle.open ? TV_COLORS.green : TV_COLORS.red;
+function getCandleDirectionColor(
+  candle: Candle,
+  visualSettings: ChartVisualSettings,
+  previousCandle?: Candle,
+) {
+  const reference = visualSettings.colorBarsByPreviousClose
+    ? previousCandle?.close ?? candle.open
+    : candle.open;
+
+  return candle.close >= reference
+    ? normalizeHexColor(visualSettings.candleBodyUpColor, TV_COLORS.green)
+    : normalizeHexColor(visualSettings.candleBodyDownColor, TV_COLORS.red);
+}
+
+function withHexAlpha(color: string, alpha: string) {
+  return `${normalizeHexColor(color)}${alpha}`;
+}
+
+function getVolumeBarColor(
+  candle: Candle,
+  visualSettings: ChartVisualSettings,
+  previousCandle?: Candle,
+) {
+  return withHexAlpha(
+    getCandleDirectionColor(candle, visualSettings, previousCandle),
+    "66",
+  );
+}
+
+function getCandleSeriesOptions(visualSettings: ChartVisualSettings) {
+  const upBody = normalizeHexColor(
+    visualSettings.candleBodyUpColor,
+    TV_COLORS.green,
+  );
+  const downBody = normalizeHexColor(
+    visualSettings.candleBodyDownColor,
+    TV_COLORS.red,
+  );
+  const upBorder = normalizeHexColor(
+    visualSettings.candleBorderUpColor,
+    upBody,
+  );
+  const downBorder = normalizeHexColor(
+    visualSettings.candleBorderDownColor,
+    downBody,
+  );
+  const upWick = normalizeHexColor(visualSettings.candleWickUpColor, upBody);
+  const downWick = normalizeHexColor(
+    visualSettings.candleWickDownColor,
+    downBody,
+  );
+
+  return {
+    upColor: visualSettings.candleBodyVisible ? upBody : "transparent",
+    downColor: visualSettings.candleBodyVisible ? downBody : "transparent",
+    borderVisible: visualSettings.candleBorderVisible,
+    borderUpColor: upBorder,
+    borderDownColor: downBorder,
+    wickVisible: visualSettings.candleWickVisible,
+    wickUpColor: upWick,
+    wickDownColor: downWick,
+  };
+}
+
+function getCandleDatum(
+  candle: Candle,
+  visualSettings: ChartVisualSettings,
+  previousCandle?: Candle,
+) {
+  const directionColor = getCandleDirectionColor(
+    candle,
+    visualSettings,
+    previousCandle,
+  );
+  const reference = visualSettings.colorBarsByPreviousClose
+    ? previousCandle?.close ?? candle.open
+    : candle.open;
+  const up = candle.close >= reference;
+  const borderColor = normalizeHexColor(
+    up
+      ? visualSettings.candleBorderUpColor
+      : visualSettings.candleBorderDownColor,
+    directionColor,
+  );
+  const wickColor = normalizeHexColor(
+    up ? visualSettings.candleWickUpColor : visualSettings.candleWickDownColor,
+    directionColor,
+  );
+
+  return {
+    time: candle.time as UTCTimestamp,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    color: visualSettings.candleBodyVisible ? directionColor : "transparent",
+    borderColor,
+    wickColor,
+  };
+}
+
+function getVolumeScaleMargins(config: VolumeConfig) {
+  const heightPct = Math.max(12, Math.min(45, config.heightPct));
+
+  return { top: (100 - heightPct) / 100, bottom: 0 };
+}
+
+function getRecentAverageVolume(candles: Candle[], excludeTime?: number) {
+  const volumes = candles
+    .filter(
+      (candle) =>
+        candle.time !== excludeTime &&
+        candle.isFinal !== false &&
+        Number.isFinite(candle.volume) &&
+        candle.volume > 0,
+    )
+    .slice(-60)
+    .map((candle) => candle.volume);
+
+  if (volumes.length === 0) return 0;
+
+  return volumes.reduce((sum, volume) => sum + volume, 0) / volumes.length;
+}
+
+function estimateLiveVolume(
+  candles: Candle[],
+  bucketTime: number,
+  stepSeconds: number,
+  nowSeconds: number,
+  currentVolume = 0,
+) {
+  const averageVolume = getRecentAverageVolume(candles, bucketTime);
+  if (averageVolume <= 0) return currentVolume;
+
+  const elapsedRatio = Math.max(
+    0.08,
+    Math.min(1, (nowSeconds - bucketTime + 1) / Math.max(1, stepSeconds)),
+  );
+
+  return Math.max(currentVolume, averageVolume * elapsedRatio);
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) return 0;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(
+    0,
+    Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio)),
+  );
+
+  return sorted[index];
+}
+
+function getVolumeDisplayCap(candles: Candle[], capOutliers: boolean) {
+  if (!capOutliers) return Number.POSITIVE_INFINITY;
+
+  const volumes = candles
+    .map((candle) => candle.volume)
+    .filter((volume) => Number.isFinite(volume) && volume > 0);
+
+  if (volumes.length < 20) return Number.POSITIVE_INFINITY;
+
+  const p98 = percentile(volumes, 0.98);
+  const median = percentile(volumes, 0.5);
+  const cap = Math.max(p98 * 1.25, median * 10);
+
+  return cap > 0 ? cap : Number.POSITIVE_INFINITY;
+}
+
+function getDisplayVolume(volume: number, cap: number) {
+  if (!Number.isFinite(volume) || volume <= 0) return 0;
+  if (!Number.isFinite(cap)) return volume;
+  return Math.min(volume, cap);
 }
 
 interface HoverInfo {
@@ -580,9 +807,6 @@ function isSameDrawingPoint(a: DrawingPoint | null, b: DrawingPoint | null) {
 }
 
 interface LastValues {
-  ema20?: number;
-  ema50?: number;
-  ema200?: number;
   rsi?: number;
   macd?: number;
   macdSignal?: number;
@@ -590,6 +814,7 @@ interface LastValues {
   sqzAdxTtm?: number;
   sqzAdx?: number;
   volume?: number;
+  vwapBands?: number;
 }
 
 interface SwingPatternMarker {
@@ -660,6 +885,32 @@ interface VolumeProfileRender {
   top: number;
   bottom: number;
   visibleBars: number;
+}
+
+interface MonthlyGannLevelRender {
+  value: number;
+  price: number;
+  y: number;
+}
+
+interface MonthlyGannBoxRender {
+  key: string;
+  label: string;
+  x: number;
+  xQuarter: number;
+  y: number;
+  width: number;
+  height: number;
+  topPrice: number;
+  bottomPrice: number;
+  startDate: string;
+  endDate: string;
+  color: string;
+  fillColor: string;
+  fillOpacity: number;
+  lineOpacity: number;
+  levels: MonthlyGannLevelRender[];
+  timeLevels: Array<{ value: number; x: number }>;
 }
 
 interface CandleCacheEntry {
@@ -794,6 +1045,7 @@ const DRAWING_POINT_REQUIREMENTS: Record<DrawingKind, number> = {
   doubleCurve: 4,
   fibRetracement: 2,
   fibExtension: 3,
+  gannGrid: 2,
   fixedVolumeProfile: 2,
   measureRange: 2,
   longPosition: 2,
@@ -832,6 +1084,7 @@ const DRAWING_LABELS: Record<DrawingKind, string> = {
   doubleCurve: "Doble curva",
   fibRetracement: "Retroceso de Fibonacci",
   fibExtension: "Extension de Fibonacci",
+  gannGrid: "Cuadricula de Gann",
   fixedVolumeProfile: "Volume Profile fijo",
   measureRange: "Regla / Medicion",
   longPosition: "Posicion larga",
@@ -852,6 +1105,17 @@ const DEFAULT_FIB_RETRACEMENT_LEVELS: FibonacciLevelConfig[] = [
   { value: 1, enabled: true, color: FIB_LEVEL_COLOR },
 ];
 const FIB_EXTENSION_LEVELS = [0, 0.618, 1, 1.272, 1.618, 2.618];
+const GANN_GRID_LEVEL_COLOR = "#ffffff";
+const DEFAULT_GANN_GRID_LEVELS: FibonacciLevelConfig[] = [
+  { value: 0, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 0.25, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 0.382, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 0.5, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 0.618, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 0.75, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+  { value: 1, enabled: true, color: GANN_GRID_LEVEL_COLOR },
+];
+const MONTHLY_GANN_LEVELS = [0, 0.25, 0.382, 0.5, 0.618, 0.75, 1];
 const PRICE_SCALE_GUTTER_WIDTH = 90;
 const PM_RANGE_MAX_CANDLES = 2500;
 const PM_RANGE_5M_LATEST_TRADE_CANDLES = 600;
@@ -864,6 +1128,8 @@ const CANDLE_DB_STORE = "candles";
 const CANDLE_DB_VERSION = 1;
 const CANDLE_DB_MAX_ENTRIES = 20;
 const CANDLE_DB_WRITE_INTERVAL_MS = 60_000;
+const LIVE_DERIVED_UPDATE_INTERVAL_MS = 350;
+const LIVE_CACHE_WRITE_INTERVAL_MS = 5_000;
 const MEMORY_ONLY_CACHE_TIMEFRAMES = new Set<Timeframe>([
   "1s",
   "1m",
@@ -1010,6 +1276,33 @@ function getFibonacciLevels(drawing: ChartDrawing) {
   });
 }
 
+function getGannGridSettings(drawing: ChartDrawing): Required<GannGridSettings> {
+  const settings = drawing.gannGrid ?? {};
+  const mergeLevels = (customLevels: FibonacciLevelConfig[] | undefined) =>
+    DEFAULT_GANN_GRID_LEVELS.map((defaultLevel, index) => {
+      const customLevel = customLevels?.[index];
+      const value = Number(customLevel?.value ?? defaultLevel.value);
+
+      return {
+        value: Number.isFinite(value) ? value : defaultLevel.value,
+        enabled: customLevel?.enabled ?? defaultLevel.enabled,
+        color: normalizeColor(customLevel?.color ?? defaultLevel.color),
+      };
+    });
+
+  return {
+    priceLevels: mergeLevels(settings.priceLevels),
+    timeLevels: mergeLevels(settings.timeLevels),
+    showLeftLabels: settings.showLeftLabels ?? true,
+    showRightLabels: settings.showRightLabels ?? true,
+    showTopLabels: settings.showTopLabels ?? true,
+    showBottomLabels: settings.showBottomLabels ?? true,
+    showPriceBackground: settings.showPriceBackground ?? false,
+    showTimeBackground: settings.showTimeBackground ?? true,
+    lineOpacity: Math.max(0, Math.min(100, settings.lineOpacity ?? 100)),
+  };
+}
+
 function getDefaultDrawingColor(kind: DrawingKind) {
   if (kind === "arrowUp") return TV_COLORS.green;
   if (kind === "arrowDown") return TV_COLORS.red;
@@ -1017,6 +1310,7 @@ function getDefaultDrawingColor(kind: DrawingKind) {
   if (kind === "shortPosition") return TV_COLORS.red;
   if (kind === "measureRange") return TV_COLORS.green;
   if (kind === "fixedVolumeProfile") return FIB_LEVEL_COLOR;
+  if (kind === "gannGrid") return "#787b86";
   if (kind === "fibRetracement" || kind === "fibExtension") return FIB_LEVEL_COLOR;
   return DEFAULT_DRAWING_COLOR;
 }
@@ -1457,15 +1751,28 @@ function detectRsiDivergences(
   return markers.slice(-100);
 }
 
+function hexToRgba(hex: string, alpha: number) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})`;
+}
+
 export function PriceChart({ symbol, timeframe }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const ema20Ref = useRef<ISeriesApi<"Line"> | null>(null);
-  const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
-  const ema200Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const volumeEma20Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const emaCrossRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const emaCross2Refs = useRef<ISeriesApi<"Line">[]>([]);
+  const vwapBandsCenterRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsUpper1Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsLower1Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsUpper2Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsLower2Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsUpper3Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const vwapBandsLower3Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const rsiRef = useRef<ISeriesApi<"Line"> | null>(null);
   const rsi30Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const rsi50Ref = useRef<ISeriesApi<"Line"> | null>(null);
@@ -1497,6 +1804,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const pendingDrawingPreviewPointRef = useRef<DrawingPoint | null>(null);
   const measurePreviewFrameRef = useRef<number | null>(null);
   const measurePreviewPointRef = useRef<MeasurePoint | null>(null);
+  const liveDerivedUpdateTimerRef = useRef<number | null>(null);
+  const liveCacheWriteTimerRef = useRef<number | null>(null);
 
   const indicators = useChartStore((s) => s.indicators);
   const hidden = useChartStore((s) => s.hidden);
@@ -1511,8 +1820,13 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
   const setSettingsTarget = useChartStore((s) => s.setSettingsTarget);
+  const setConfig = useChartStore((s) => s.setConfig);
   const pageBackgroundColor = useChartStore((s) => s.pageBackgroundColor);
   const timeZone = useChartStore((s) => s.chartTimeZone);
+  const chartVisualSettings = useChartStore((s) => s.chartVisualSettings);
+  const setChartVisualSettings = useChartStore(
+    (s) => s.setChartVisualSettings,
+  );
   const chartTheme = useMemo(
     () => getChartTheme(pageBackgroundColor),
     [pageBackgroundColor],
@@ -1529,8 +1843,13 @@ export function PriceChart({ symbol, timeframe }: Props) {
   addDrawingRef.current = addDrawing;
   const symbolRef = useRef(symbol);
   symbolRef.current = symbol;
+  const timeframeRef = useRef(timeframe);
+  timeframeRef.current = timeframe;
+  const paneOffsetsRef = useRef<PaneOffset[]>([]);
   const configRef = useRef(config);
   configRef.current = config;
+  const chartVisualSettingsRef = useRef(chartVisualSettings);
+  chartVisualSettingsRef.current = chartVisualSettings;
   const indicatorsRef = useRef(indicators);
   indicatorsRef.current = indicators;
   const hiddenRef = useRef(hidden);
@@ -1540,11 +1859,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const [lastPrice, setLastPrice] = useState<{ value: number; pct: number } | null>(null);
   const [lastValues, setLastValues] = useState<LastValues>({});
   const [paneOffsets, setPaneOffsets] = useState<PaneOffset[]>([]);
+  paneOffsetsRef.current = paneOffsets;
   const [measure, setMeasure] = useState<MeasureState>(INITIAL_MEASURE);
   const [renderTick, setRenderTick] = useState(0);
   const [candleVersion, setCandleVersion] = useState(0);
   const [clockTimestamp, setClockTimestamp] = useState(() => Date.now());
   const [contextMenu, setContextMenu] = useState<ChartContextMenu | null>(null);
+  const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
+  const [gannSettingsOpen, setGannSettingsOpen] = useState(false);
   const [drawingDraft, setDrawingDraft] = useState<DrawingDraft | null>(null);
   const [drawingPreviewPoint, setDrawingPreviewPoint] =
     useState<DrawingPoint | null>(null);
@@ -1555,6 +1877,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
   measureRef.current = measure;
   const drawingDraftRef = useRef(drawingDraft);
   drawingDraftRef.current = drawingDraft;
+
+  const isLiquidityBlocksEnabled = indicators.liquidityBlocks && !hidden.liquidityBlocks;
+  useOrderbookBlocks(symbol, candleSeriesRef, {
+    ...config.liquidityBlocks,
+    enabled: isLiquidityBlocksEnabled,
+  });
 
   function scheduleOverlayRender() {
     if (overlayRenderFrameRef.current !== null) return;
@@ -1596,6 +1924,69 @@ export function PriceChart({ symbol, timeframe }: Props) {
   }
 
   // Safe coordinate conversion helpers for off-screen and future drawing
+  function timeToLogicalIndex(time: number): number | null {
+    if (candlesRef.current.length === 0) return null;
+
+    const firstCandle = candlesRef.current[0];
+    const lastCandle = candlesRef.current[candlesRef.current.length - 1];
+    const step = TIMEFRAME_SECONDS[timeframeRef.current] || 60;
+
+    if (time >= lastCandle.time) {
+      return candlesRef.current.length - 1 + (time - lastCandle.time) / step;
+    }
+
+    if (time <= firstCandle.time) {
+      return 0 - (firstCandle.time - time) / step;
+    }
+
+    let low = 0;
+    let high = candlesRef.current.length - 1;
+    
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const midTime = candlesRef.current[mid].time;
+      
+      if (midTime === time) {
+        return mid;
+      } else if (midTime < time) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    const rightIndex = Math.max(1, Math.min(candlesRef.current.length - 1, low));
+    const leftIndex = rightIndex - 1;
+    const left = candlesRef.current[leftIndex];
+    const right = candlesRef.current[rightIndex];
+    const span = Math.max(1, right.time - left.time);
+    return leftIndex + (time - left.time) / span;
+  }
+
+  function logicalIndexToTime(logical: number): number | null {
+    if (candlesRef.current.length === 0) return null;
+
+    const firstCandle = candlesRef.current[0];
+    const lastCandle = candlesRef.current[candlesRef.current.length - 1];
+    const step = TIMEFRAME_SECONDS[timeframeRef.current] || 60;
+    const lastIndex = candlesRef.current.length - 1;
+
+    if (logical >= lastIndex) {
+      return lastCandle.time + (logical - lastIndex) * step;
+    }
+
+    if (logical <= 0) {
+      return firstCandle.time - (0 - logical) * step;
+    }
+
+    const leftIndex = Math.floor(logical);
+    const rightIndex = Math.min(lastIndex, leftIndex + 1);
+    const left = candlesRef.current[leftIndex];
+    const right = candlesRef.current[rightIndex];
+    if (!left || !right) return lastCandle.time;
+    return left.time + (right.time - left.time) * (logical - leftIndex);
+  }
+
   function timeToCoordinateSafe(time: number): number | null {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
@@ -1603,52 +1994,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     const timeScale = chart.timeScale();
     
-    // 1. Try native timeToCoordinate first (it works for loaded/visible bars)
     const nativeX = timeScale.timeToCoordinate(time as UTCTimestamp);
     if (nativeX !== null) return nativeX;
 
-    // 2. Extrapolate or interpolate using logical indices
-    const firstCandle = candlesRef.current[0];
-    const lastCandle = candlesRef.current[candlesRef.current.length - 1];
-    
-    const step = TIMEFRAME_SECONDS[timeframe] || 60;
-
-    let logicalIndex = 0;
-    if (time >= lastCandle.time) {
-      const diff = time - lastCandle.time;
-      const bars = Math.round(diff / step);
-      logicalIndex = (candlesRef.current.length - 1) + bars;
-    } else if (time <= firstCandle.time) {
-      const diff = firstCandle.time - time;
-      const bars = Math.round(diff / step);
-      logicalIndex = 0 - bars;
-    } else {
-      // Binary search for the closest candle time within the loaded dataset
-      let low = 0;
-      let high = candlesRef.current.length - 1;
-      let closestIndex = 0;
-      let minDiff = Infinity;
-      
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        const midTime = candlesRef.current[mid].time;
-        const diff = Math.abs(midTime - time);
-        
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestIndex = mid;
-        }
-        
-        if (midTime === time) {
-          break;
-        } else if (midTime < time) {
-          low = mid + 1;
-        } else {
-          high = mid - 1;
-        }
-      }
-      logicalIndex = closestIndex;
-    }
+    const logicalIndex = timeToLogicalIndex(time);
+    if (logicalIndex === null) return null;
 
     return timeScale.logicalToCoordinate(logicalIndex as Logical);
   }
@@ -1661,25 +2011,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const logical = timeScale.coordinateToLogical(x);
     if (logical === null) return null;
     
-    const firstCandle = candlesRef.current[0];
-    const lastCandle = candlesRef.current[candlesRef.current.length - 1];
-    
-    const step = TIMEFRAME_SECONDS[timeframe] || 60;
-    
-    const lastIndex = candlesRef.current.length - 1;
-    if (logical >= lastIndex) {
-      const barsDiff = Math.round(logical - lastIndex);
-      return lastCandle.time + barsDiff * step;
-    } else if (logical <= 0) {
-      const barsDiff = Math.round(0 - logical);
-      return firstCandle.time - barsDiff * step;
-    } else {
-      // Within loaded range, find the closest candle
-      const index = Math.round(logical);
-      const candle = candlesRef.current[index];
-      if (candle) return candle.time;
-      return lastCandle.time;
-    }
+    return logicalIndexToTime(logical);
+  }
+
+  function mainPriceToY(price: number): number | null {
+    const y = candleSeriesRef.current?.priceToCoordinate(price);
+    if (y === null || y === undefined) return null;
+    return (paneOffsetsRef.current[0]?.top ?? 0) + Number(y);
+  }
+
+  function yToMainPrice(y: number): number | null {
+    const localY = y - (paneOffsetsRef.current[0]?.top ?? 0);
+    return candleSeriesRef.current?.coordinateToPrice(localY) ?? null;
   }
 
   // Interactive Drag & Drop handlers for drawing resizing and displacement
@@ -1690,7 +2033,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const localX = clientX - rect.left;
     const localY = clientY - rect.top;
     const time = coordinateToTimeSafe(localX);
-    const price = candleSeriesRef.current.coordinateToPrice(localY);
+    const price = yToMainPrice(localY);
 
     if (time === null || price === null || !isFinite(price)) {
       return null;
@@ -1894,7 +2237,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const currentAtStart = useChartStore
       .getState()
       .drawings.find((item) => item.id === drawing.id);
-    if (drawing.kind !== "rectangle" || !currentAtStart || currentAtStart.locked) {
+    if (
+      (drawing.kind !== "rectangle" && drawing.kind !== "gannGrid") ||
+      !currentAtStart ||
+      currentAtStart.locked
+    ) {
       return;
     }
 
@@ -1966,7 +2313,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const startMouseLocalY = startMouseY - rect.top;
     
     const startLogical = timeScale.coordinateToLogical(startMouseLocalX);
-    const startPrice = candleSeriesRef.current.coordinateToPrice(startMouseLocalY);
+    const startPrice = yToMainPrice(startMouseLocalY);
     if (startLogical === null || startPrice === null) return;
     
     const onMouseMove = (moveEvent: MouseEvent) => {
@@ -1983,52 +2330,20 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const localY = moveEvent.clientY - currentRect.top;
       
       const currentLogical = currentTimeScale.coordinateToLogical(localX);
-      const currentPrice = candleSeriesRef.current.coordinateToPrice(localY);
+      const currentPrice = yToMainPrice(localY);
       if (currentLogical === null || currentPrice === null) return;
       
       const deltaLogical = currentLogical - startLogical;
       const deltaPrice = currentPrice - startPrice;
       
-      const step = TIMEFRAME_SECONDS[timeframe] || 60;
-      
       const nextPoints = startPoints.map((point) => {
         const nextPrice = point.price + deltaPrice;
-        
-        const firstCandle = candlesRef.current[0];
-        const lastCandle = candlesRef.current[candlesRef.current.length - 1];
-        const lastIndex = candlesRef.current.length - 1;
-        
-        let pointLogical = 0;
-        if (point.time >= lastCandle.time) {
-          const diff = point.time - lastCandle.time;
-          pointLogical = lastIndex + Math.round(diff / step);
-        } else if (point.time <= firstCandle.time) {
-          const diff = firstCandle.time - point.time;
-          pointLogical = 0 - Math.round(diff / step);
-        } else {
-          let closest = 0;
-          let minDiff = Infinity;
-          for (let i = 0; i < candlesRef.current.length; i++) {
-            const diff = Math.abs(candlesRef.current[i].time - point.time);
-            if (diff < minDiff) {
-              minDiff = diff;
-              closest = i;
-            }
-          }
-          pointLogical = closest;
-        }
-        
-        const nextLogical = Math.round(pointLogical + deltaLogical);
-        
-        let nextTime = 0;
-        if (nextLogical >= lastIndex) {
-          nextTime = lastCandle.time + (nextLogical - lastIndex) * step;
-        } else if (nextLogical <= 0) {
-          nextTime = firstCandle.time - (0 - nextLogical) * step;
-        } else {
-          nextTime = candlesRef.current[nextLogical]?.time ?? point.time;
-        }
-        
+        const pointLogical = timeToLogicalIndex(point.time);
+        const nextTime =
+          pointLogical === null
+            ? point.time
+            : logicalIndexToTime(pointLogical + deltaLogical) ?? point.time;
+
         return { time: nextTime, price: nextPrice };
       });
       
@@ -2065,8 +2380,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
       if (!chart || !container) return;
 
+      void chart;
       void container;
-      chart.applyOptions({ autoSize: true });
       recomputePaneOffsets();
       scheduleOverlayRender();
       afterLayout?.();
@@ -2074,6 +2389,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     requestAnimationFrame(refresh);
     requestAnimationFrame(() => requestAnimationFrame(refresh));
+  }
+
+  function syncPaneLayout() {
+    recomputePaneOffsets();
+    scheduleOverlayRender();
   }
 
   function applyRsiScaleRange() {
@@ -2096,6 +2416,25 @@ export function PriceChart({ symbol, timeframe }: Props) {
       scaleMargins: { top: 0.08, bottom: 0.12 },
     });
     scale.setVisibleRange(SQZ_VISIBLE_RANGE);
+  }
+
+  function stabilizeSqzPaneRender() {
+    if (!chartRef.current || !indicatorsRef.current.sqzAdxTtm) return;
+
+    const sync = (remainingFrames: number) => {
+      requestAnimationFrame(() => {
+        if (!chartRef.current || !sqzSqueezeRef.current) return;
+
+        updateSqzAdxTtm();
+        recomputePaneOffsets();
+
+        if (remainingFrames > 0) {
+          sync(remainingFrames - 1);
+        }
+      });
+    };
+
+    sync(3);
   }
 
   function removeMacdSeries() {
@@ -2152,8 +2491,16 @@ export function PriceChart({ symbol, timeframe }: Props) {
         panes: { separatorColor: chartTheme.border, separatorHoverColor: chartTheme.border },
       },
       grid: {
-        vertLines: { color: chartTheme.grid },
-        horzLines: { color: chartTheme.grid },
+        vertLines: {
+          color: chartVisualSettingsRef.current.gridVisible
+            ? chartTheme.grid
+            : "transparent",
+        },
+        horzLines: {
+          color: chartVisualSettingsRef.current.gridVisible
+            ? chartTheme.grid
+            : "transparent",
+        },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -2178,36 +2525,15 @@ export function PriceChart({ symbol, timeframe }: Props) {
       autoSize: true,
     });
 
-    // PANE 0 — Candles + EMAs
+    // PANE 0 — Candles + EMA crosses
     candleSeriesRef.current = chart.addSeries(CandlestickSeries, {
-      upColor: TV_COLORS.green,
-      downColor: TV_COLORS.red,
-      borderUpColor: TV_COLORS.green,
-      borderDownColor: TV_COLORS.red,
-      wickUpColor: TV_COLORS.green,
-      wickDownColor: TV_COLORS.red,
+      ...getCandleSeriesOptions(chartVisualSettingsRef.current),
+      ...getPriceFormatOptions(symbolRef.current),
       priceLineColor: TV_COLORS.textMuted,
       priceLineStyle: 2,
+      lastValueVisible: false,
     });
 
-    ema20Ref.current = chart.addSeries(LineSeries, {
-      color: INDICATOR_COLORS.ema20,
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    ema50Ref.current = chart.addSeries(LineSeries, {
-      color: INDICATOR_COLORS.ema50,
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    ema200Ref.current = chart.addSeries(LineSeries, {
-      color: INDICATOR_COLORS.ema200,
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
     emaCrossRefs.current = getEmaCrossLines(configRef.current.emaCross).map(
       (line) =>
         chart.addSeries(LineSeries, {
@@ -2220,13 +2546,36 @@ export function PriceChart({ symbol, timeframe }: Props) {
           visible: false,
         }),
     );
+    emaCross2Refs.current = getEmaCrossLines(
+      configRef.current.emaCross2,
+      DEFAULT_CONFIG.emaCross2,
+    ).map((line) =>
+      chart.addSeries(LineSeries, {
+        color: line.color,
+        lineStyle: LINE_STYLE_TO_CHART[line.lineStyle],
+        lineType: LINE_TYPE_TO_CHART[line.lineStyle],
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        visible: false,
+      }),
+    );
+
+    const vbOpts = { priceLineVisible: false, lastValueVisible: false, visible: false, lineWidth: (configRef.current.vwapBands.lineWidth ?? 1) as any };
+    vwapBandsCenterRef.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsUpper1Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band1Color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsLower1Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band1Color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsUpper2Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band2Color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsLower2Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band2Color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsUpper3Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band3Color, configRef.current.vwapBands.opacity), ...vbOpts });
+    vwapBandsLower3Ref.current = chart.addSeries(LineSeries, { color: hexToRgba(configRef.current.vwapBands.band3Color, configRef.current.vwapBands.opacity), ...vbOpts });
 
     chartRef.current = chart;
 
     // Click handler — add horizontal price line when hline tool is active
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeriesRef.current) return;
-      const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
+      const price = yToMainPrice(param.point.y);
       if (price === null || !isFinite(price)) return;
       const activeTool = toolRef.current;
       const time =
@@ -2243,6 +2592,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         const pointsNeeded = DRAWING_POINT_REQUIREMENTS[activeTool];
 
         setSelectedDrawingId(null);
+        setGannSettingsOpen(false);
         setDrawingPreviewPoint(null);
 
         if (points.length >= pointsNeeded) {
@@ -2262,6 +2612,22 @@ export function PriceChart({ symbol, timeframe }: Props) {
                   showTrendLine: true,
                 }
               : {}),
+            ...(activeTool === "gannGrid"
+              ? {
+                  gannGrid: {
+                    priceLevels: DEFAULT_GANN_GRID_LEVELS,
+                    timeLevels: DEFAULT_GANN_GRID_LEVELS,
+                    showLeftLabels: true,
+                    showRightLabels: true,
+                    showTopLabels: true,
+                    showBottomLabels: true,
+                    showPriceBackground: false,
+                    showTimeBackground: true,
+                    lineOpacity: 100,
+                  },
+                  fillOpacity: 0,
+                }
+              : {}),
             locked: false,
           });
           setDrawingDraft(null);
@@ -2274,6 +2640,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
       if (activeTool === "cursor") {
         setSelectedDrawingId(null);
+        setGannSettingsOpen(false);
       }
 
       if (activeTool === "measure") {
@@ -2314,7 +2681,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         param.point &&
         candleSeriesRef.current
       ) {
-        const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
+        const price = yToMainPrice(param.point.y);
         const time = toUnixSeconds(param.time) ?? coordinateToTimeSafe(param.point.x);
         if (price !== null && isFinite(price) && time !== null) {
           measurePreviewPointRef.current = { time, price };
@@ -2366,10 +2733,19 @@ export function PriceChart({ symbol, timeframe }: Props) {
     chart.timeScale().subscribeVisibleLogicalRangeChange(logicalRangeHandler);
 
     let isPointerPanning = false;
+    let paneResizeFrame: number | null = null;
+    const requestPaneLayoutSync = () => {
+      if (paneResizeFrame !== null) return;
+
+      paneResizeFrame = window.requestAnimationFrame(() => {
+        paneResizeFrame = null;
+        syncPaneLayout();
+      });
+    };
     const handleWheel = () => scheduleOverlayRender();
     const handlePointerDown = () => {
       isPointerPanning = true;
-      scheduleOverlayRender();
+      requestPaneLayoutSync();
     };
     const handlePointerMove = (event: PointerEvent) => {
       if (isDrawingTool(toolRef.current) && drawingDraftRef.current) {
@@ -2377,11 +2753,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
           getDrawingPointFromMouse(event.clientX, event.clientY),
         );
       }
-      if (isPointerPanning) scheduleOverlayRender();
+      if (isPointerPanning) requestPaneLayoutSync();
     };
     const handlePointerUp = () => {
       isPointerPanning = false;
-      scheduleOverlayRender();
+      requestPaneLayoutSync();
+      requestAnimationFrame(requestPaneLayoutSync);
     };
 
     containerRef.current.addEventListener("wheel", handleWheel, { passive: true });
@@ -2392,10 +2769,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     // ResizeObserver — recompute pane offsets when chart container resizes
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        recomputePaneOffsets();
-        scheduleOverlayRender();
-      });
+      requestAnimationFrame(syncPaneLayout);
     });
     ro.observe(containerRef.current);
     recomputePaneOffsets();
@@ -2426,17 +2800,20 @@ export function PriceChart({ symbol, timeframe }: Props) {
         window.cancelAnimationFrame(measurePreviewFrameRef.current);
         measurePreviewFrameRef.current = null;
       }
+      if (paneResizeFrame !== null) {
+        window.cancelAnimationFrame(paneResizeFrame);
+        paneResizeFrame = null;
+      }
       measurePreviewPointRef.current = null;
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      volumeEma20Ref.current = null;
       priceLinesMap.clear();
-      ema20Ref.current = null;
-      ema50Ref.current = null;
-      ema200Ref.current = null;
       emaCrossRefs.current = [];
+      emaCross2Refs.current = [];
       rsiRef.current = null;
       rsi30Ref.current = null;
       rsi50Ref.current = null;
@@ -2470,8 +2847,16 @@ export function PriceChart({ symbol, timeframe }: Props) {
         },
       },
       grid: {
-        vertLines: { color: chartTheme.grid },
-        horzLines: { color: chartTheme.grid },
+        vertLines: {
+          color: chartVisualSettings.gridVisible
+            ? chartTheme.grid
+            : "transparent",
+        },
+        horzLines: {
+          color: chartVisualSettings.gridVisible
+            ? chartTheme.grid
+            : "transparent",
+        },
       },
       crosshair: {
         vertLine: {
@@ -2495,7 +2880,30 @@ export function PriceChart({ symbol, timeframe }: Props) {
         borderColor: chartTheme.border,
       },
     });
-  }, [chartTheme]);
+  }, [chartTheme, chartVisualSettings.gridVisible]);
+
+  useEffect(() => {
+    candleSeriesRef.current?.applyOptions({
+      ...getCandleSeriesOptions(chartVisualSettings),
+      ...getPriceFormatOptions(symbol),
+      priceLineColor:
+        candlesRef.current.length > 0
+          ? getCandleDirectionColor(
+              candlesRef.current[candlesRef.current.length - 1],
+              chartVisualSettings,
+              candlesRef.current[candlesRef.current.length - 2],
+            )
+          : TV_COLORS.textMuted,
+      lastValueVisible: false,
+    });
+    candleSeriesRef.current?.setData(
+      candlesRef.current.map((candle, index, candles) =>
+        getCandleDatum(candle, chartVisualSettings, candles[index - 1]),
+      ),
+    );
+    updateVolumeSeriesData();
+    updateVolumeEma20();
+  }, [chartVisualSettings, symbol]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -2546,7 +2954,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     if (stillVisible) return;
 
-    const resetTimer = window.setTimeout(() => setSelectedDrawingId(null), 0);
+    const resetTimer = window.setTimeout(() => {
+      setSelectedDrawingId(null);
+      setGannSettingsOpen(false);
+    }, 0);
     return () => window.clearTimeout(resetTimer);
   }, [drawings, selectedDrawingId, symbol]);
 
@@ -2620,20 +3031,58 @@ export function PriceChart({ symbol, timeframe }: Props) {
         },
         0,
       );
-      v.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      v.priceScale().applyOptions({
+        scaleMargins: getVolumeScaleMargins(configRef.current.volume),
+      });
       volumeSeriesRef.current = v;
-      const data = candlesRef.current.map((k) => ({
-        time: k.time as UTCTimestamp,
-        value: k.volume,
-        color: k.close >= k.open ? `${TV_COLORS.green}66` : `${TV_COLORS.red}66`,
-      }));
-      v.setData(data);
+      volumeEma20Ref.current = chartRef.current.addSeries(
+        LineSeries,
+        {
+          color: normalizeHexColor(
+            configRef.current.volume.ema20Color,
+            DEFAULT_CONFIG.volume.ema20Color,
+          ),
+          lineWidth: 1,
+          priceScaleId: "volume",
+          priceLineVisible: false,
+          lastValueVisible: false,
+          visible:
+            configRef.current.volume.ema20Enabled &&
+            indicatorsRef.current.volume &&
+            !hiddenRef.current.volume,
+        },
+        0,
+      );
+      updateVolumeSeriesData();
+      updateVolumeEma20();
     } else if (!indicators.volume && volumeSeriesRef.current && chartRef.current) {
       chartRef.current.removeSeries(volumeSeriesRef.current);
+      if (volumeEma20Ref.current) {
+        chartRef.current.removeSeries(volumeEma20Ref.current);
+      }
       volumeSeriesRef.current = null;
+      volumeEma20Ref.current = null;
     }
     requestAnimationFrame(() => recomputePaneOffsets());
   }, [indicators.volume]);
+
+  useEffect(() => {
+    const volumeConfig = config.volume;
+    volumeSeriesRef.current?.priceScale().applyOptions({
+      scaleMargins: getVolumeScaleMargins(volumeConfig),
+    });
+    volumeEma20Ref.current?.applyOptions({
+      color: normalizeHexColor(
+        volumeConfig.ema20Color,
+        DEFAULT_CONFIG.volume.ema20Color,
+      ),
+      visible:
+        indicators.volume &&
+        !hidden.volume &&
+        volumeConfig.ema20Enabled,
+    });
+    updateVolumeEma20();
+  }, [config.volume, indicators.volume, hidden.volume]);
 
   // RSI pane
   useEffect(() => {
@@ -2875,15 +3324,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
       );
       sqzPaneIndexRef.current = paneIndex;
       applySqzScaleRange();
-      try {
-        chartRef.current.panes()[paneIndex]?.setStretchFactor(1);
-        chartRef.current.panes()[0]?.setStretchFactor(3);
-      } catch {}
       updateSqzAdxTtm();
       refreshChartLayout(() => {
         updateSqzAdxTtm();
         applySqzScaleRange();
       });
+      stabilizeSqzPaneRender();
     } else if (!indicators.sqzAdxTtm && sqzSqueezeRef.current && chartRef.current) {
       removeSqzSeries();
     }
@@ -2893,15 +3339,33 @@ export function PriceChart({ symbol, timeframe }: Props) {
   // Visibility — eye toggle (hidden state) + enabled state combined
   useEffect(() => {
     const v = (key: IndicatorKey) => indicators[key] && !hidden[key];
-    ema20Ref.current?.applyOptions({ visible: v("ema20") });
-    ema50Ref.current?.applyOptions({ visible: v("ema50") });
-    ema200Ref.current?.applyOptions({ visible: v("ema200") });
     const emaCrossLines = getEmaCrossLines(configRef.current.emaCross);
     emaCrossRefs.current.forEach((series, index) =>
       series.applyOptions({
         visible: v("emaCross") && (emaCrossLines[index]?.enabled ?? true),
       }),
     );
+    const emaCross2Lines = getEmaCrossLines(
+      configRef.current.emaCross2,
+      DEFAULT_CONFIG.emaCross2,
+    );
+    emaCross2Refs.current.forEach((series, index) =>
+      series.applyOptions({
+        visible: v("emaCross2") && (emaCross2Lines[index]?.enabled ?? true),
+      }),
+    );
+    if (vwapBandsCenterRef.current) {
+      const vbCfg = configRef.current.vwapBands;
+      const vVB = v("vwapBands");
+      const lw = (vbCfg.lineWidth ?? 1) as any;
+      vwapBandsCenterRef.current.applyOptions({ visible: vVB, color: hexToRgba(vbCfg.color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsUpper1Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand1, color: hexToRgba(vbCfg.band1Color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsLower1Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand1, color: hexToRgba(vbCfg.band1Color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsUpper2Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand2, color: hexToRgba(vbCfg.band2Color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsLower2Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand2, color: hexToRgba(vbCfg.band2Color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsUpper3Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand3, color: hexToRgba(vbCfg.band3Color, vbCfg.opacity), lineWidth: lw });
+      vwapBandsLower3Ref.current?.applyOptions({ visible: vVB && vbCfg.showBand3, color: hexToRgba(vbCfg.band3Color, vbCfg.opacity), lineWidth: lw });
+    }
     if (rsiRef.current) rsiRef.current.applyOptions({ visible: v("rsi") });
     if (rsi30Ref.current) rsi30Ref.current.applyOptions({ visible: v("rsi") });
     if (rsi50Ref.current) rsi50Ref.current.applyOptions({ visible: v("rsi") });
@@ -2920,17 +3384,25 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (sqzWaveBRef.current) sqzWaveBRef.current.applyOptions({ visible: v("sqzAdxTtm") });
     if (sqzWaveCRef.current) sqzWaveCRef.current.applyOptions({ visible: v("sqzAdxTtm") });
     if (volumeSeriesRef.current) volumeSeriesRef.current.applyOptions({ visible: v("volume") });
+    if (volumeEma20Ref.current) {
+      volumeEma20Ref.current.applyOptions({
+        visible: v("volume") && configRef.current.volume.ema20Enabled,
+      });
+    }
     refreshChartLayout();
   }, [indicators, hidden]);
-
-  // Recompute indicators when config changes (periods)
-  useEffect(() => {
-    updateEMAs();
-  }, [config.ema20, config.ema50, config.ema200]);
 
   useEffect(() => {
     updateEmaCross();
   }, [config.emaCross]);
+
+  useEffect(() => {
+    updateEmaCross2();
+  }, [config.emaCross2]);
+
+  useEffect(() => {
+    updateVwapBands();
+  }, [config.vwapBands]);
 
   useEffect(() => {
     updateRSI();
@@ -3013,50 +3485,92 @@ export function PriceChart({ symbol, timeframe }: Props) {
     setSelectedDrawingId(null);
   }, [symbol]);
 
-  function updateEMAs() {
+  function updateVolumeValue() {
     const c = candlesRef.current;
     if (c.length === 0) return;
-    const cfg = configRef.current;
-    let last20: number | undefined;
-    let last50: number | undefined;
-    let last200: number | undefined;
-
-    if (ema20Ref.current) {
-      const data = ema(c, cfg.ema20);
-      ema20Ref.current.setData(
-        data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
-      );
-      last20 = data.at(-1)?.value;
-    }
-    if (ema50Ref.current) {
-      const data = ema(c, cfg.ema50);
-      ema50Ref.current.setData(
-        data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
-      );
-      last50 = data.at(-1)?.value;
-    }
-    if (ema200Ref.current) {
-      const data = ema(c, cfg.ema200);
-      ema200Ref.current.setData(
-        data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
-      );
-      last200 = data.at(-1)?.value;
-    }
     const lastVol = c.at(-1)?.volume;
     setLastValues((prev) => ({
       ...prev,
-      ema20: last20,
-      ema50: last50,
-      ema200: last200,
       volume: lastVol,
     }));
   }
 
+  function getVolumeHistogramData() {
+    const candles = candlesRef.current;
+    const cap = getVolumeDisplayCap(candles, !isCryptoSymbol(symbolRef.current));
+
+    return candles.map((candle, index) => ({
+      time: candle.time as UTCTimestamp,
+      value: getDisplayVolume(candle.volume, cap),
+      color: getVolumeBarColor(
+        candle,
+        chartVisualSettingsRef.current,
+        candles[index - 1],
+      ),
+    }));
+  }
+
+  function updateVolumeSeriesData() {
+    volumeSeriesRef.current?.setData(getVolumeHistogramData());
+  }
+
+  function updateLiveVolumeSeriesData(candle: Candle, previousCandle?: Candle) {
+    const volumeSeries = volumeSeriesRef.current;
+    if (!volumeSeries) return;
+
+    const cap = getVolumeDisplayCap(
+      candlesRef.current,
+      !isCryptoSymbol(symbolRef.current),
+    );
+    volumeSeries.update({
+      time: candle.time as UTCTimestamp,
+      value: getDisplayVolume(candle.volume, cap),
+      color: getVolumeBarColor(
+        candle,
+        chartVisualSettingsRef.current,
+        previousCandle,
+      ),
+    });
+  }
+
+  function updateVolumeEma20() {
+    const series = volumeEma20Ref.current;
+    if (!series) return;
+
+    const c = candlesRef.current;
+    const cap = getVolumeDisplayCap(c, !isCryptoSymbol(symbolRef.current));
+    const volumeConfig = configRef.current.volume;
+    series.applyOptions({
+      color: normalizeHexColor(
+        volumeConfig.ema20Color,
+        DEFAULT_CONFIG.volume.ema20Color,
+      ),
+      visible:
+        indicatorsRef.current.volume &&
+        !hiddenRef.current.volume &&
+        volumeConfig.ema20Enabled,
+    });
+
+    if (c.length === 0 || !volumeConfig.ema20Enabled) {
+      series.setData([]);
+      return;
+    }
+
+    const volumes = c.map((candle) => getDisplayVolume(candle.volume, cap));
+    const emaValues = emaNumberValues(volumes, 20);
+    series.setData(
+      c
+        .map((candle, index) => ({
+          time: candle.time as UTCTimestamp,
+          value: emaValues[index],
+        }))
+        .filter((point) => Number.isFinite(point.value)),
+    );
+  }
+
   function clearIndicatorSeries() {
-    ema20Ref.current?.setData([]);
-    ema50Ref.current?.setData([]);
-    ema200Ref.current?.setData([]);
     emaCrossRefs.current.forEach((series) => series.setData([]));
+    emaCross2Refs.current.forEach((series) => series.setData([]));
     rsiRef.current?.setData([]);
     rsi30Ref.current?.setData([]);
     rsi50Ref.current?.setData([]);
@@ -3074,6 +3588,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
     sqzWaveARef.current?.setData([]);
     sqzWaveBRef.current?.setData([]);
     sqzWaveCRef.current?.setData([]);
+    volumeEma20Ref.current?.setData([]);
+    vwapBandsCenterRef.current?.setData([]);
+    vwapBandsUpper1Ref.current?.setData([]);
+    vwapBandsLower1Ref.current?.setData([]);
+    vwapBandsUpper2Ref.current?.setData([]);
+    vwapBandsLower2Ref.current?.setData([]);
+    vwapBandsUpper3Ref.current?.setData([]);
+    vwapBandsLower3Ref.current?.setData([]);
     setLastValues({});
     scheduleOverlayRender();
   }
@@ -3098,6 +3620,68 @@ export function PriceChart({ symbol, timeframe }: Props) {
         data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
       );
     });
+  }
+
+  function updateEmaCross2() {
+    const c = candlesRef.current;
+    if (c.length === 0) return;
+
+    const lines = getEmaCrossLines(
+      configRef.current.emaCross2,
+      DEFAULT_CONFIG.emaCross2,
+    );
+    const currentIndicators = indicatorsRef.current;
+    const currentHidden = hiddenRef.current;
+    emaCross2Refs.current.forEach((series, index) => {
+      const line = lines[index];
+      const data = line.enabled ? ema(c, line.period) : [];
+      series.applyOptions({
+        color: line.color,
+        lineStyle: LINE_STYLE_TO_CHART[line.lineStyle],
+        lineType: LINE_TYPE_TO_CHART[line.lineStyle],
+        visible:
+          currentIndicators.emaCross2 &&
+          !currentHidden.emaCross2 &&
+          line.enabled,
+      });
+      series.setData(
+        data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
+      );
+    });
+  }
+
+  function updateVwapBands() {
+    const c = candlesRef.current;
+    if (c.length === 0 || !vwapBandsCenterRef.current) return;
+
+    const currentIndicators = indicatorsRef.current;
+    const currentHidden = hiddenRef.current;
+    const cfg = configRef.current.vwapBands;
+    
+    const vVB = currentIndicators.vwapBands && !currentHidden.vwapBands;
+    const lw = (cfg.lineWidth ?? 1) as any;
+    vwapBandsCenterRef.current.applyOptions({ visible: vVB, color: hexToRgba(cfg.color, cfg.opacity), lineWidth: lw });
+    vwapBandsUpper1Ref.current?.applyOptions({ visible: vVB && cfg.showBand1, color: hexToRgba(cfg.band1Color, cfg.opacity), lineWidth: lw });
+    vwapBandsLower1Ref.current?.applyOptions({ visible: vVB && cfg.showBand1, color: hexToRgba(cfg.band1Color, cfg.opacity), lineWidth: lw });
+    vwapBandsUpper2Ref.current?.applyOptions({ visible: vVB && cfg.showBand2, color: hexToRgba(cfg.band2Color, cfg.opacity), lineWidth: lw });
+    vwapBandsLower2Ref.current?.applyOptions({ visible: vVB && cfg.showBand2, color: hexToRgba(cfg.band2Color, cfg.opacity), lineWidth: lw });
+    vwapBandsUpper3Ref.current?.applyOptions({ visible: vVB && cfg.showBand3, color: hexToRgba(cfg.band3Color, cfg.opacity), lineWidth: lw });
+    vwapBandsLower3Ref.current?.applyOptions({ visible: vVB && cfg.showBand3, color: hexToRgba(cfg.band3Color, cfg.opacity), lineWidth: lw });
+    
+    const data = vwapBands(c, cfg);
+    
+    const timeMap = (d: any) => ({ time: d.time as UTCTimestamp, value: d.vwap });
+    const getVal = (d: any, key: string) => ({ time: d.time as UTCTimestamp, value: d[key] });
+    
+    vwapBandsCenterRef.current.setData(data.map(timeMap));
+    vwapBandsUpper1Ref.current?.setData(data.filter(d => d.upper1 !== undefined).map(d => getVal(d, 'upper1')));
+    vwapBandsLower1Ref.current?.setData(data.filter(d => d.lower1 !== undefined).map(d => getVal(d, 'lower1')));
+    vwapBandsUpper2Ref.current?.setData(data.filter(d => d.upper2 !== undefined).map(d => getVal(d, 'upper2')));
+    vwapBandsLower2Ref.current?.setData(data.filter(d => d.lower2 !== undefined).map(d => getVal(d, 'lower2')));
+    vwapBandsUpper3Ref.current?.setData(data.filter(d => d.upper3 !== undefined).map(d => getVal(d, 'upper3')));
+    vwapBandsLower3Ref.current?.setData(data.filter(d => d.lower3 !== undefined).map(d => getVal(d, 'lower3')));
+    
+    setLastValues((prev) => ({ ...prev, vwapBands: data.at(-1)?.vwap }));
   }
 
   function updateRSI() {
@@ -3182,7 +3766,6 @@ export function PriceChart({ symbol, timeframe }: Props) {
         value: p.value,
       })),
     );
-    applyRsiScaleRange();
     setLastValues((prev) => ({ ...prev, rsi: data.at(-1)?.value }));
     scheduleOverlayRender();
   }
@@ -3219,7 +3802,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (c.length === 0 || !sqzSqueezeRef.current) return;
     const cfg = configRef.current.sqzAdxTtm;
     const data = sqzAdxTtm(c, cfg);
-    const visible = indicators.sqzAdxTtm && !hidden.sqzAdxTtm;
+    const visible =
+      indicatorsRef.current.sqzAdxTtm && !hiddenRef.current.sqzAdxTtm;
     const squeezeData = data
       .filter((point) => Number.isFinite(point.squeeze))
       .map((point) => ({
@@ -3292,7 +3876,6 @@ export function PriceChart({ symbol, timeframe }: Props) {
     sqzWaveCRef.current?.setData(waveCData);
 
     if (visible && hasVisibleSqzData) {
-      applySqzScaleRange();
       requestAnimationFrame(() => {
         sqzSqueezeRef.current?.setData(squeezeData);
         sqzAdxRef.current?.setData(adxData);
@@ -3301,8 +3884,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         sqzWaveARef.current?.setData(waveAData);
         sqzWaveBRef.current?.setData(waveBData);
         sqzWaveCRef.current?.setData(waveCData);
-        applySqzScaleRange();
-        refreshChartLayout();
+        recomputePaneOffsets();
       });
     }
 
@@ -3318,8 +3900,13 @@ export function PriceChart({ symbol, timeframe }: Props) {
   }
 
   function updateCurrentPriceColor(candle: Candle) {
+    const previousCandle = candlesRef.current[candlesRef.current.length - 2];
     candleSeriesRef.current?.applyOptions({
-      priceLineColor: getCandleColor(candle),
+      priceLineColor: getCandleDirectionColor(
+        candle,
+        chartVisualSettingsRef.current,
+        previousCandle,
+      ),
     });
   }
 
@@ -3338,27 +3925,119 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
   function resetChartView() {
     setContextMenu(null);
-    chartRef.current?.timeScale().fitContent();
-    candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
-    volumeSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
-    rsiRef.current?.priceScale().applyOptions({ autoScale: true });
-    macdRef.current?.priceScale().applyOptions({ autoScale: true });
-    sqzSqueezeRef.current?.priceScale().applyOptions({ autoScale: true });
-    requestAnimationFrame(() => recomputePaneOffsets());
+    const reset = () => {
+      chartRef.current?.timeScale().fitContent();
+      candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+      volumeSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+      rsiRef.current?.priceScale().applyOptions({ autoScale: true });
+      macdRef.current?.priceScale().applyOptions({ autoScale: true });
+      sqzSqueezeRef.current?.priceScale().applyOptions({ autoScale: true });
+      recomputePaneOffsets();
+    };
+
+    reset();
+    requestAnimationFrame(reset);
   }
 
-  function buildEmaCrossFill(): EmaCrossFillRender | null {
+  function updateChartVisualSettings(patch: Partial<ChartVisualSettings>) {
+    setChartVisualSettings(patch);
+  }
+
+  function renderCandleColorRow({
+    label,
+    enabled,
+    enabledKey,
+    upColor,
+    downColor,
+    upColorKey,
+    downColorKey,
+  }: {
+    label: string;
+    enabled: boolean;
+    enabledKey:
+      | "candleBodyVisible"
+      | "candleBorderVisible"
+      | "candleWickVisible";
+    upColor: string;
+    downColor: string;
+    upColorKey:
+      | "candleBodyUpColor"
+      | "candleBorderUpColor"
+      | "candleWickUpColor";
+    downColorKey:
+      | "candleBodyDownColor"
+      | "candleBorderDownColor"
+      | "candleWickDownColor";
+  }) {
+    return (
+      <div className="grid grid-cols-[94px_42px_42px] items-center gap-2">
+        <label className="group flex min-w-0 items-center gap-2 text-sm font-semibold text-[#d5d5d5]">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) =>
+              updateChartVisualSettings({ [enabledKey]: event.target.checked })
+            }
+            className="h-[18px] w-[18px] shrink-0 cursor-pointer rounded-[3px] border border-[#707070] accent-[#f2f2f2]"
+          />
+          <span className="truncate">{label}</span>
+        </label>
+        <label className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-[#4f555d] bg-[#2b2d31] p-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)] has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-45">
+          <span
+            className="h-6 w-6 rounded-sm"
+            style={{ backgroundColor: normalizeHexColor(upColor, TV_COLORS.green) }}
+          />
+          <input
+            aria-label={`${label} alcista`}
+            title={`${label} alcista`}
+            type="color"
+            value={normalizeHexColor(upColor, TV_COLORS.green)}
+            disabled={!enabled}
+            onChange={(event) =>
+              updateChartVisualSettings({ [upColorKey]: event.target.value })
+            }
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+          />
+        </label>
+        <label className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded border border-[#4f555d] bg-[#2b2d31] p-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)] has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-45">
+          <span
+            className="h-6 w-6 rounded-sm"
+            style={{ backgroundColor: normalizeHexColor(downColor, TV_COLORS.red) }}
+          />
+          <input
+            aria-label={`${label} bajista`}
+            title={`${label} bajista`}
+            type="color"
+            value={normalizeHexColor(downColor, TV_COLORS.red)}
+            disabled={!enabled}
+            onChange={(event) =>
+              updateChartVisualSettings({ [downColorKey]: event.target.value })
+            }
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+          />
+        </label>
+      </div>
+    );
+  }
+
+  function buildEmaCrossFill(
+    indicatorKey: "emaCross" | "emaCross2",
+    lineConfig: EmaCrossLineConfig[],
+    fillConfig: EmaCrossFillConfig,
+    lineDefaults = DEFAULT_CONFIG.emaCross,
+    fillDefaults = DEFAULT_CONFIG.emaCrossFill,
+  ): EmaCrossFillRender | null {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
     const container = containerRef.current;
-    const fill = getEmaCrossFill(config.emaCrossFill);
+    const fill = getEmaCrossFill(fillConfig, fillDefaults);
 
     if (
       !chart ||
       !candleSeries ||
       !container ||
-      !indicators.emaCross ||
-      hidden.emaCross ||
+      !indicators[indicatorKey] ||
+      hidden[indicatorKey] ||
       !fill.enabled ||
       fill.opacity <= 0 ||
       fill.from === fill.to ||
@@ -3367,7 +4046,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       return null;
     }
 
-    const lines = getEmaCrossLines(config.emaCross);
+    const lines = getEmaCrossLines(lineConfig, lineDefaults);
     const fromLine = lines[fill.from];
     const toLine = lines[fill.to];
     if (!fromLine || !toLine || !fromLine.enabled || !toLine.enabled) return null;
@@ -3403,7 +4082,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     const color = /^#[0-9a-fA-F]{6}$/.test(fill.color)
       ? fill.color
-      : DEFAULT_CONFIG.emaCrossFill.color;
+      : fillDefaults.color;
 
     return {
       path: `M ${fromPoints.join(" L ")} L ${toPoints.reverse().join(" L ")} Z`,
@@ -3415,6 +4094,158 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
   function normalizeProfileColor(color: string, fallback: string) {
     return /^#[0-9a-fA-F]{6}$/.test(color) ? color : fallback;
+  }
+
+  function getPreviousMonthWindow(time: number) {
+    const date = new Date(time * 1000);
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth();
+    const start = Date.UTC(year, month - 1, 1) / 1000;
+    const end = Date.UTC(year, month, 1) / 1000;
+    const labelDate = new Date(start * 1000);
+
+    return {
+      start,
+      end,
+      key: `${labelDate.getUTCFullYear()}-${String(labelDate.getUTCMonth() + 1).padStart(2, "0")}`,
+    };
+  }
+
+  function parseDateInputToUnix(date: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+    const time = Date.parse(`${date}T00:00:00Z`);
+    return Number.isFinite(time) ? Math.floor(time / 1000) : null;
+  }
+
+  function getMonthlyGannRange(candles: Candle[], settings: MonthlyGannConfig) {
+    const manualStart = parseDateInputToUnix(settings.startDate);
+    const manualEnd = parseDateInputToUnix(settings.endDate);
+
+    if (manualStart !== null && manualEnd !== null && manualEnd >= manualStart) {
+      return {
+        start: manualStart,
+        end: manualEnd + TIMEFRAME_SECONDS["1d"],
+        key: `${settings.startDate} - ${settings.endDate}`,
+        manual: true,
+      };
+    }
+
+    const previousMonth = getPreviousMonthWindow(candles[candles.length - 1].time);
+    return { ...previousMonth, manual: false };
+  }
+
+  function buildMonthlyGannOverlay(): MonthlyGannBoxRender[] {
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    const mainPane = paneOffsets[0];
+    const monthlyConfig: MonthlyGannConfig = {
+      ...DEFAULT_CONFIG.monthlyGann,
+      ...config.monthlyGann,
+    };
+    const candles = candlesRef.current;
+
+    if (
+      !chart ||
+      !candleSeries ||
+      !mainPane ||
+      timeframe !== "1d" ||
+      !indicators.monthlyGann ||
+      hidden.monthlyGann ||
+      candles.length < 2
+    ) {
+      return [];
+    }
+
+    const range = getMonthlyGannRange(candles, monthlyConfig);
+    const rangeCandles = candles.filter(
+      (candle) => candle.time >= range.start && candle.time < range.end,
+    );
+    if (rangeCandles.length < 2) return [];
+
+    const first = rangeCandles[0];
+    const last = rangeCandles[rangeCandles.length - 1];
+    if (!first || !last) return [];
+    let lowCandle = first;
+    let highCandle = first;
+    rangeCandles.forEach((candle) => {
+      if (candle.low < lowCandle.low) lowCandle = candle;
+      if (candle.high > highCandle.high) highCandle = candle;
+    });
+
+    const bottomPrice =
+      typeof monthlyConfig.bottomPriceOverride === "number" &&
+      Number.isFinite(monthlyConfig.bottomPriceOverride)
+        ? monthlyConfig.bottomPriceOverride
+        : lowCandle.low;
+    const topPrice =
+      typeof monthlyConfig.topPriceOverride === "number" &&
+      Number.isFinite(monthlyConfig.topPriceOverride)
+        ? monthlyConfig.topPriceOverride
+        : highCandle.high;
+    const priceRange = topPrice - bottomPrice;
+    if (!Number.isFinite(priceRange) || priceRange <= 0) return [];
+
+    const xStart = timeToCoordinateSafe(first.time);
+    const xQuarter = timeToCoordinateSafe(last.time);
+    const yTop = candleSeries.priceToCoordinate(topPrice);
+    const yBottom = candleSeries.priceToCoordinate(bottomPrice);
+    if (xStart === null || xQuarter === null || yTop === null || yBottom === null) {
+      return [];
+    }
+
+    const quarterDistance = Number(xQuarter) - Number(xStart);
+    if (!Number.isFinite(quarterDistance) || quarterDistance <= 0) return [];
+
+    const x = Number(xStart);
+    const width = Math.max(1, quarterDistance / 0.25);
+    const y = Math.min(Number(yTop), Number(yBottom));
+    const height = Math.max(1, Math.abs(Number(yBottom) - Number(yTop)));
+    if (y > mainPane.top + mainPane.height || y + height < mainPane.top) return [];
+
+    const color = normalizeProfileColor(
+      monthlyConfig.color,
+      DEFAULT_CONFIG.monthlyGann.color,
+    );
+    const fillColor = normalizeProfileColor(
+      monthlyConfig.fillColor,
+      DEFAULT_CONFIG.monthlyGann.fillColor,
+    );
+    const fillOpacity = Math.max(0, Math.min(0.4, monthlyConfig.opacity / 100));
+    const lineOpacity = Math.max(0, Math.min(1, monthlyConfig.lineOpacity / 100));
+    const levels = MONTHLY_GANN_LEVELS.map((value): MonthlyGannLevelRender | null => {
+      const price = bottomPrice + priceRange * value;
+      const levelY = candleSeries.priceToCoordinate(price);
+      if (levelY === null) return null;
+
+      return { value, price, y: Number(levelY) };
+    }).filter((level): level is MonthlyGannLevelRender => level !== null);
+
+    if (levels.length === 0) return [];
+
+    return [
+      {
+        key: range.key,
+        label: range.key,
+        x,
+        xQuarter: Number(xQuarter),
+        y,
+        width,
+        height,
+        topPrice,
+        bottomPrice,
+        startDate: formatDateInputFromUnix(first.time),
+        endDate: formatDateInputFromUnix(last.time),
+        color,
+        fillColor,
+        fillOpacity,
+        lineOpacity,
+        levels,
+        timeLevels: MONTHLY_GANN_LEVELS.map((value) => ({
+          value,
+          x: x + width * value,
+        })),
+      },
+    ];
   }
 
   function buildVisibleRangeVolumeProfile(): VolumeProfileRender | null {
@@ -3663,8 +4494,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const selectionLeft = Math.max(0, Math.min(a.x, b.x));
     const selectionRight = Math.min(overlayWidth, Math.max(a.x, b.x));
     const selectionWidth = Math.max(1, selectionRight - selectionLeft);
-    const yHigh = candleSeries.priceToCoordinate(highest);
-    const yLow = candleSeries.priceToCoordinate(lowest);
+    const yHigh = mainPriceToY(highest);
+    const yLow = mainPriceToY(lowest);
     const selectionTop = yHigh === null || yLow === null
       ? Math.min(a.y, b.y)
       : Math.min(yHigh, yLow);
@@ -3686,8 +4517,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
       .map((bin, index): VolumeProfileBinRender | null => {
         const priceLow = lowest + index * priceStep;
         const priceHigh = priceLow + priceStep;
-        const binYHigh = candleSeries.priceToCoordinate(priceHigh);
-        const binYLow = candleSeries.priceToCoordinate(priceLow);
+        const binYHigh = mainPriceToY(priceHigh);
+        const binYLow = mainPriceToY(priceLow);
         if (binYHigh === null || binYLow === null) return null;
 
         const y = Math.min(binYHigh, binYLow);
@@ -3716,12 +4547,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (bins.length === 0) return null;
 
     const pocPrice = lowest + (pocIndex + 0.5) * priceStep;
-    const pocY = candleSeries.priceToCoordinate(pocPrice);
+    const pocY = mainPriceToY(pocPrice);
     if (pocY === null) return null;
     const vahPrice = lowest + (valueArea.high + 1) * priceStep;
     const valPrice = lowest + valueArea.low * priceStep;
-    const vahY = candleSeries.priceToCoordinate(vahPrice);
-    const valY = candleSeries.priceToCoordinate(valPrice);
+    const vahY = mainPriceToY(vahPrice);
+    const valY = mainPriceToY(valPrice);
 
     return {
       bins,
@@ -3758,14 +4589,59 @@ export function PriceChart({ symbol, timeframe }: Props) {
   // Load historical data + subscribe live
   useEffect(() => {
     let unsub: (() => void) | null = null;
+    let simpleFxUnsub: (() => void) | null = null;
     let cancelled = false;
     let isLoading = false;
     const isCrypto = isCryptoSymbol(symbol);
+    const simpleFxLiveSymbol =
+      getIndexInstrument(symbol)?.simplefxSymbol ??
+      getForexInstrument(symbol)?.simplefxSymbol;
+    const usesSimpleFxLive = !!simpleFxLiveSymbol;
+    const candleCacheSymbol = usesSimpleFxLive
+      ? `${symbol}:SIMPLEFX_REST`
+      : symbol;
     const usesMarketTickerPolling =
-      isCapitalMarketSymbol(symbol) || isMainIndexSymbol(symbol);
+      !usesSimpleFxLive &&
+      (isCapitalMarketSymbol(symbol) || isMainIndexSymbol(symbol));
     const marketPollInterval = getMarketPollIntervalMs(symbol);
     hasMoreOlderRef.current = true;
     loadingOlderRef.current = false;
+
+    function flushLiveDerivedUpdates() {
+      liveDerivedUpdateTimerRef.current = null;
+      if (cancelled) return;
+
+      setCandleVersion((version) => version + 1);
+      updateVolumeValue();
+      updateVolumeEma20();
+      updateEmaCross();
+      updateEmaCross2();
+      updateVwapBands();
+      updateRSI();
+      updateMACD();
+      updateSqzAdxTtm();
+    }
+
+    function scheduleLiveDerivedUpdates() {
+      if (liveDerivedUpdateTimerRef.current !== null) return;
+
+      liveDerivedUpdateTimerRef.current = window.setTimeout(
+        flushLiveDerivedUpdates,
+        LIVE_DERIVED_UPDATE_INTERVAL_MS,
+      );
+    }
+
+    function scheduleLiveCacheWrite() {
+      if (liveCacheWriteTimerRef.current !== null) return;
+
+      liveCacheWriteTimerRef.current = window.setTimeout(() => {
+        liveCacheWriteTimerRef.current = null;
+        if (cancelled) return;
+        writeCandleCache(candleCacheSymbol, timeframe, candlesRef.current, {
+          forcePersist: false,
+        });
+      }, LIVE_CACHE_WRITE_INTERVAL_MS);
+    }
 
     function applyCandles(klines: Candle[], fitContent = false) {
       const validKlines = normalizeCandles(klines);
@@ -3773,30 +4649,22 @@ export function PriceChart({ symbol, timeframe }: Props) {
       setCandleVersion((version) => version + 1);
       if (candleSeriesRef.current) {
         candleSeriesRef.current.setData(
-          validKlines.map((k) => ({
-            time: k.time as UTCTimestamp,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
-          })),
+          validKlines.map((k, index) =>
+            getCandleDatum(
+              k,
+              chartVisualSettingsRef.current,
+              validKlines[index - 1],
+            ),
+          ),
         );
       }
-      if (volumeSeriesRef.current) {
-        volumeSeriesRef.current.setData(
-          validKlines.map((k) => ({
-            time: k.time as UTCTimestamp,
-            value: k.volume,
-            color:
-              k.close >= k.open
-                ? `${TV_COLORS.green}66`
-                : `${TV_COLORS.red}66`,
-          })),
-        );
-      }
+      updateVolumeSeriesData();
       if (validKlines.length > 0) {
-        updateEMAs();
+        updateVolumeValue();
+        updateVolumeEma20();
         updateEmaCross();
+        updateEmaCross2();
+        updateVwapBands();
         updateRSI();
         updateMACD();
         updateSqzAdxTtm();
@@ -3804,9 +4672,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
         clearIndicatorSeries();
       }
       if (fitContent) {
-        chartRef.current?.timeScale().fitContent();
+        resetChartView();
         requestAnimationFrame(() => {
-          chartRef.current?.timeScale().fitContent();
+          resetChartView();
         });
       }
       requestAnimationFrame(() => recomputePaneOffsets());
@@ -3867,7 +4735,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
             ? normalizeCandles([...candlesRef.current, ...klines])
             : klines;
         const validKlines = applyCandles(nextKlines, fitContent);
-        writeCandleCache(symbol, timeframe, validKlines, { forcePersist });
+        writeCandleCache(candleCacheSymbol, timeframe, validKlines, {
+          forcePersist,
+        });
 
         if (isCrypto) {
           const ws = getBinanceWS();
@@ -3889,33 +4759,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
               } else {
                 return;
               }
-              candleSeriesRef.current.update({
-                time: k.time as UTCTimestamp,
-                open: k.open,
-                high: k.high,
-                low: k.low,
-                close: k.close,
-              });
-              if (volumeSeriesRef.current) {
-                volumeSeriesRef.current.update({
-                  time: k.time as UTCTimestamp,
-                  value: k.volume,
-                  color: k.close >= k.open ? `${TV_COLORS.green}66` : `${TV_COLORS.red}66`,
-                });
-              }
-              updateCurrentPriceColor(k);
-              setCandleVersion((version) => version + 1);
-              updateEMAs();
-              updateEmaCross();
-              updateRSI();
-              updateMACD();
-              updateSqzAdxTtm();
               const prev = arr[arr.length - 2] ?? lastCandle;
+              candleSeriesRef.current.update(
+                getCandleDatum(k, chartVisualSettingsRef.current, prev),
+              );
+              updateLiveVolumeSeriesData(k, prev);
+              updateCurrentPriceColor(k);
+              scheduleLiveDerivedUpdates();
               setLastPrice({
                 value: k.close,
                 pct: prev && prev.close !== 0 ? ((k.close - prev.close) / prev.close) * 100 : 0,
               });
-              writeCandleCache(symbol, timeframe, arr);
+              scheduleLiveCacheWrite();
             },
           });
         }
@@ -3927,6 +4782,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         setCandleVersion((version) => version + 1);
         candleSeriesRef.current?.setData([]);
         volumeSeriesRef.current?.setData([]);
+        volumeEma20Ref.current?.setData([]);
         clearIndicatorSeries();
         setLastPrice(null);
       } finally {
@@ -3934,84 +4790,211 @@ export function PriceChart({ symbol, timeframe }: Props) {
       }
     }
 
+    function getLivePriceChangePercent(
+      livePrice: number,
+      providerPercent?: number,
+    ) {
+      if (providerPercent !== undefined && Number.isFinite(providerPercent)) {
+        return providerPercent;
+      }
+
+      const previous =
+        candlesRef.current.at(-2)?.close ?? candlesRef.current.at(-1)?.open;
+
+      return previous && previous !== 0
+        ? ((livePrice - previous) / previous) * 100
+        : 0;
+    }
+
+    function applyLivePrice(livePrice: number, providerPercent?: number) {
+      if (cancelled || livePrice <= 0 || !candleSeriesRef.current) {
+        return;
+      }
+
+      const priceChangePercent = getLivePriceChangePercent(
+        livePrice,
+        providerPercent,
+      );
+
+      const arr = candlesRef.current;
+      const lastCandle = arr[arr.length - 1];
+      const step = TIMEFRAME_SECONDS[timeframe] || 60;
+      const now = Math.floor(Date.now() / 1000);
+      const bucketTime =
+        timeframe === "1M"
+          ? lastCandle?.time ?? now
+          : Math.floor(now / step) * step;
+      let nextCandle: Candle;
+
+      if (!lastCandle) {
+        const estimatedVolume = estimateLiveVolume(
+          arr,
+          bucketTime,
+          step,
+          now,
+        );
+        nextCandle = {
+          time: bucketTime,
+          open: livePrice,
+          high: livePrice,
+          low: livePrice,
+          close: livePrice,
+          volume: estimatedVolume,
+          isFinal: false,
+        };
+        arr.push(nextCandle);
+      } else if (bucketTime > lastCandle.time) {
+        const estimatedVolume = estimateLiveVolume(
+          arr,
+          bucketTime,
+          step,
+          now,
+        );
+        nextCandle = {
+          time: bucketTime,
+          open: lastCandle.close,
+          high: Math.max(lastCandle.close, livePrice),
+          low: Math.min(lastCandle.close, livePrice),
+          close: livePrice,
+          volume: estimatedVolume,
+          isFinal: false,
+        };
+        arr.push(nextCandle);
+        if (arr.length > CANDLE_CACHE_MAX_CANDLES) arr.shift();
+      } else {
+        const estimatedVolume = estimateLiveVolume(
+          arr,
+          bucketTime,
+          step,
+          now,
+          lastCandle.volume,
+        );
+        nextCandle = {
+          ...lastCandle,
+          high: Math.max(lastCandle.high, livePrice),
+          low: Math.min(lastCandle.low, livePrice),
+          close: livePrice,
+          volume: estimatedVolume,
+          isFinal: false,
+        };
+        arr[arr.length - 1] = nextCandle;
+      }
+
+      const previousCandle = arr[arr.length - 2];
+      candleSeriesRef.current.update(
+        getCandleDatum(
+          nextCandle,
+          chartVisualSettingsRef.current,
+          previousCandle,
+        ),
+      );
+      updateLiveVolumeSeriesData(nextCandle, previousCandle);
+      updateCurrentPriceColor(nextCandle);
+      scheduleLiveDerivedUpdates();
+      setLastPrice({
+        value: livePrice,
+        pct: priceChangePercent,
+      });
+      scheduleLiveCacheWrite();
+    }
+
+    function applySimpleFxTick(livePrice: number, quoteTime?: number) {
+      if (cancelled || livePrice <= 0 || !candleSeriesRef.current) {
+        return;
+      }
+
+      const arr = candlesRef.current;
+      const lastCandle = arr[arr.length - 1];
+      const step = TIMEFRAME_SECONDS[timeframe] || 60;
+      const tickTime =
+        quoteTime && Number.isFinite(quoteTime)
+          ? Math.floor(quoteTime)
+          : Math.floor(Date.now() / 1000);
+      const rawBucketTime =
+        timeframe === "1M"
+          ? lastCandle?.time ?? tickTime
+          : Math.floor(tickTime / step) * step;
+      const localBucketTime =
+        timeframe === "1M"
+          ? lastCandle?.time ?? Math.floor(Date.now() / 1000)
+          : Math.floor(Math.floor(Date.now() / 1000) / step) * step;
+      const bucketTime =
+        lastCandle &&
+        (rawBucketTime > localBucketTime || rawBucketTime > lastCandle.time + step)
+          ? lastCandle.time
+          : rawBucketTime;
+      let nextCandle: Candle;
+      const shouldFitContent = arr.length === 0;
+
+      if (!lastCandle || bucketTime > lastCandle.time) {
+        const estimatedVolume = estimateLiveVolume(
+          arr,
+          bucketTime,
+          step,
+          tickTime,
+        );
+        nextCandle = {
+          time: bucketTime,
+          open: lastCandle?.close ?? livePrice,
+          high: Math.max(lastCandle?.close ?? livePrice, livePrice),
+          low: Math.min(lastCandle?.close ?? livePrice, livePrice),
+          close: livePrice,
+          volume: estimatedVolume || 1,
+          isFinal: false,
+        };
+        arr.push(nextCandle);
+        if (arr.length > CANDLE_CACHE_MAX_CANDLES) arr.shift();
+      } else if (bucketTime === lastCandle.time) {
+        const tickVolume = lastCandle.volume + 1;
+        const estimatedVolume = estimateLiveVolume(
+          arr,
+          bucketTime,
+          step,
+          tickTime,
+          tickVolume,
+        );
+        nextCandle = {
+          ...lastCandle,
+          high: Math.max(lastCandle.high, livePrice),
+          low: Math.min(lastCandle.low, livePrice),
+          close: livePrice,
+          volume: estimatedVolume,
+          isFinal: false,
+        };
+        arr[arr.length - 1] = nextCandle;
+      } else {
+        return;
+      }
+
+      const previousCandle = arr[arr.length - 2];
+      candleSeriesRef.current.update(
+        getCandleDatum(
+          nextCandle,
+          chartVisualSettingsRef.current,
+          previousCandle,
+        ),
+      );
+      updateLiveVolumeSeriesData(nextCandle, previousCandle);
+      updateCurrentPriceColor(nextCandle);
+      scheduleLiveDerivedUpdates();
+      setLastPrice({
+        value: livePrice,
+        pct: getLivePriceChangePercent(livePrice),
+      });
+      scheduleLiveCacheWrite();
+
+      if (shouldFitContent) {
+        requestAnimationFrame(() => {
+          chartRef.current?.timeScale().fitContent();
+          recomputePaneOffsets();
+        });
+      }
+    }
+
     async function loadLiveTicker() {
       try {
         const ticker = await fetchTicker24h(symbol);
-        if (cancelled || ticker.lastPrice <= 0 || !candleSeriesRef.current) {
-          return;
-        }
-
-        const arr = candlesRef.current;
-        const lastCandle = arr[arr.length - 1];
-        const step = TIMEFRAME_SECONDS[timeframe] || 60;
-        const now = Math.floor(Date.now() / 1000);
-        const bucketTime =
-          timeframe === "1M"
-            ? lastCandle?.time ?? now
-            : Math.floor(now / step) * step;
-        let nextCandle: Candle;
-
-        if (!lastCandle) {
-          nextCandle = {
-            time: bucketTime,
-            open: ticker.lastPrice,
-            high: ticker.lastPrice,
-            low: ticker.lastPrice,
-            close: ticker.lastPrice,
-            volume: 0,
-            isFinal: false,
-          };
-          arr.push(nextCandle);
-        } else if (bucketTime > lastCandle.time) {
-          nextCandle = {
-            time: bucketTime,
-            open: lastCandle.close,
-            high: Math.max(lastCandle.close, ticker.lastPrice),
-            low: Math.min(lastCandle.close, ticker.lastPrice),
-            close: ticker.lastPrice,
-            volume: 0,
-            isFinal: false,
-          };
-          arr.push(nextCandle);
-          if (arr.length > CANDLE_CACHE_MAX_CANDLES) arr.shift();
-        } else {
-          nextCandle = {
-            ...lastCandle,
-            high: Math.max(lastCandle.high, ticker.lastPrice),
-            low: Math.min(lastCandle.low, ticker.lastPrice),
-            close: ticker.lastPrice,
-            isFinal: false,
-          };
-          arr[arr.length - 1] = nextCandle;
-        }
-
-        candleSeriesRef.current.update({
-          time: nextCandle.time as UTCTimestamp,
-          open: nextCandle.open,
-          high: nextCandle.high,
-          low: nextCandle.low,
-          close: nextCandle.close,
-        });
-        volumeSeriesRef.current?.update({
-          time: nextCandle.time as UTCTimestamp,
-          value: nextCandle.volume,
-          color:
-            nextCandle.close >= nextCandle.open
-              ? `${TV_COLORS.green}66`
-              : `${TV_COLORS.red}66`,
-        });
-        updateCurrentPriceColor(nextCandle);
-        setCandleVersion((version) => version + 1);
-        updateEMAs();
-        updateEmaCross();
-        updateRSI();
-        updateMACD();
-        updateSqzAdxTtm();
-        setLastPrice({
-          value: ticker.lastPrice,
-          pct: ticker.priceChangePercent,
-        });
-        writeCandleCache(symbol, timeframe, arr);
+        applyLivePrice(ticker.lastPrice, ticker.priceChangePercent);
       } catch {
         return;
       }
@@ -4067,7 +5050,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
           ?.timeScale()
           .getVisibleLogicalRange();
         const validNextCandles = applyCandles(nextCandles, false);
-        writeCandleCache(symbol, timeframe, validNextCandles);
+        writeCandleCache(candleCacheSymbol, timeframe, validNextCandles);
 
         if (previousVisibleRange) {
           const shift = uniqueOlderCandles.length;
@@ -4092,7 +5075,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     loadOlderRef.current = loadOlderHistory;
 
-    const cachedCandles = readMemoryCandleCache(symbol, timeframe);
+    const cachedCandles = readMemoryCandleCache(candleCacheSymbol, timeframe);
     if (cachedCandles && cachedCandles.length > 0) {
       applyCandles(cachedCandles, true);
       void load({
@@ -4103,14 +5086,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
     } else if (isPersistentCacheTimeframe(timeframe)) {
       void (async () => {
         const persistentCandles = await readPersistentCandleCache(
-          symbol,
+          candleCacheSymbol,
           timeframe,
         );
         if (cancelled) return;
 
         if (persistentCandles && persistentCandles.length > 0) {
           applyCandles(persistentCandles, true);
-          writeCandleCache(symbol, timeframe, persistentCandles);
+          writeCandleCache(candleCacheSymbol, timeframe, persistentCandles);
           void load({
             fitContent: false,
             clearOnError: false,
@@ -4123,6 +5106,13 @@ export function PriceChart({ symbol, timeframe }: Props) {
     } else {
       void load({ fitContent: true, clearOnError: true });
     }
+
+    if (usesSimpleFxLive && simpleFxLiveSymbol) {
+      simpleFxUnsub = getSimpleFxWS().subscribeQuote(simpleFxLiveSymbol, (quote) => {
+        applySimpleFxTick(quote.mid, quote.time);
+      });
+    }
+
     const pollId = window.setInterval(
       () => {
         if (isCrypto || !isCryptoSymbol(symbol)) {
@@ -4131,14 +5121,25 @@ export function PriceChart({ symbol, timeframe }: Props) {
           void load({ mergeWithExisting: true });
         }
       },
-      usesMarketTickerPolling ? marketPollInterval : MARKET_POLL_INTERVAL_MS,
+      usesMarketTickerPolling || usesSimpleFxLive
+        ? marketPollInterval
+        : MARKET_POLL_INTERVAL_MS,
     );
 
     return () => {
       cancelled = true;
       loadOlderRef.current = null;
-      if (pollId !== null) window.clearInterval(pollId);
+      window.clearInterval(pollId);
+      if (liveDerivedUpdateTimerRef.current !== null) {
+        window.clearTimeout(liveDerivedUpdateTimerRef.current);
+        liveDerivedUpdateTimerRef.current = null;
+      }
+      if (liveCacheWriteTimerRef.current !== null) {
+        window.clearTimeout(liveCacheWriteTimerRef.current);
+        liveCacheWriteTimerRef.current = null;
+      }
       if (unsub) unsub();
+      if (simpleFxUnsub) simpleFxUnsub();
     };
   }, [symbol, timeframe]);
 
@@ -4159,7 +5160,22 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const rsi70Y = rsiRef.current?.priceToCoordinate(70) ?? null;
   const rsi30Y = rsiRef.current?.priceToCoordinate(30) ?? null;
   const emaCrossLines = getEmaCrossLines(config.emaCross);
-  const emaCrossFill = buildEmaCrossFill();
+  const emaCross2Lines = getEmaCrossLines(
+    config.emaCross2,
+    DEFAULT_CONFIG.emaCross2,
+  );
+  const emaCrossFill = buildEmaCrossFill(
+    "emaCross",
+    config.emaCross,
+    config.emaCrossFill,
+  );
+  const emaCross2Fill = buildEmaCrossFill(
+    "emaCross2",
+    config.emaCross2,
+    config.emaCross2Fill,
+    DEFAULT_CONFIG.emaCross2,
+    DEFAULT_CONFIG.emaCross2Fill,
+  );
   const volumeProfile = useMemo(
     () => buildVisibleRangeVolumeProfile(),
     [
@@ -4169,6 +5185,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
       indicators.volumeProfile,
       paneOffsets,
       renderTick,
+    ],
+  );
+  const monthlyGannBoxes = useMemo(
+    () => buildMonthlyGannOverlay(),
+    [
+      candleVersion,
+      config.monthlyGann,
+      hidden.monthlyGann,
+      indicators.monthlyGann,
+      paneOffsets,
+      renderTick,
+      timeframe,
     ],
   );
   const lastCandle = candlesRef.current.at(-1);
@@ -4181,22 +5209,26 @@ export function PriceChart({ symbol, timeframe }: Props) {
   );
   const currentPriceY =
     lastPrice && candleSeriesRef.current
-      ? candleSeriesRef.current.priceToCoordinate(lastPrice.value)
+      ? mainPriceToY(lastPrice.value)
       : null;
   const mainPaneTop = paneOffsets[0]?.top ?? 0;
   const mainPaneHeight = paneOffsets[0]?.height;
-  const countdownTop =
-    candleCountdown && currentPriceY !== null
-      ? mainPaneHeight
-        ? Math.max(
-            mainPaneTop + 4,
-            Math.min(currentPriceY + 12, mainPaneTop + mainPaneHeight - 18),
-          )
-        : currentPriceY + 12
-      : null;
   const overlayWidth = containerRef.current?.clientWidth ?? 0;
   const overlayHeight = containerRef.current?.clientHeight ?? 0;
   const mainPaneBottom = mainPaneTop + (mainPaneHeight ?? overlayHeight);
+  const priceClockLabelTop =
+    lastPrice && currentPriceY !== null
+      ? Math.max(
+          mainPaneTop + 2,
+          Math.min(currentPriceY - 12, mainPaneBottom - 36),
+        )
+      : null;
+  const priceClockLabelColor =
+    lastCandle
+      ? getCandleDirectionColor(lastCandle, chartVisualSettings, previousCandle)
+      : lastPrice && lastPrice.pct < 0
+        ? TV_COLORS.red
+        : TV_COLORS.green;
   const drawingsForSymbol = useMemo(
     () => drawings.filter((drawing) => drawing.symbol === symbol),
     [drawings, symbol],
@@ -4209,6 +5241,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
     selectedDrawing?.kind === "fibRetracement"
       ? getFibonacciLevels(selectedDrawing)
       : [];
+  const selectedGannSettings =
+    selectedDrawing?.kind === "gannGrid"
+      ? getGannGridSettings(selectedDrawing)
+      : null;
   const draftDrawing = useMemo<ChartDrawing | null>(() => {
     if (!drawingDraft) return null;
 
@@ -4230,12 +5266,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
     return [...drawingsForSymbol, ...(draftDrawing ? [draftDrawing] : [])]
       .map((drawing) => {
       const chart = chartRef.current;
-      const candleSeries = candleSeriesRef.current;
-      if (!chart || !candleSeries) return null;
+      if (!chart || !candleSeriesRef.current) return null;
       const points = drawing.points
         .map((point): ScreenPoint | null => {
           const x = timeToCoordinateSafe(point.time);
-          const y = candleSeries.priceToCoordinate(point.price);
+          const y = mainPriceToY(point.price);
 
           if (x === null || y === null) return null;
           return { ...point, x, y };
@@ -4256,6 +5291,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
     renderTick,
     timeframe,
   ]);
+  const fixedVolumeProfileDrawings = projectedDrawings.filter(
+    ({ drawing }) => drawing.kind === "fixedVolumeProfile",
+  );
+  const foregroundDrawings = projectedDrawings.filter(
+    ({ drawing }) => drawing.kind !== "fixedVolumeProfile",
+  );
   const swingMarkers =
     indicators.swingPatterns && !hidden.swingPatterns
       ? getSwingPatternMarkers(
@@ -4264,7 +5305,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         )
           .map((marker) => {
             const x = timeToCoordinateSafe(marker.time);
-            const y = candleSeriesRef.current?.priceToCoordinate(marker.price);
+            const y = mainPriceToY(marker.price);
             return x === null || y === null || y === undefined
               ? null
               : { ...marker, x, y: Number(y) };
@@ -4414,10 +5455,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
     pmRangeDataKey,
     timeframe,
   ]);
-
   function projectTimePrice(time: number, price: number) {
     const x = timeToCoordinateSafe(time);
-    const y = candleSeriesRef.current?.priceToCoordinate(price);
+    const y = mainPriceToY(price);
     return x === null || y === null || y === undefined ? null : { x, y: Number(y) };
   }
 
@@ -4632,6 +5672,87 @@ export function PriceChart({ symbol, timeframe }: Props) {
     updateDrawing(selectedDrawing.id, { fibonacciLevels });
   }
 
+  function updateSelectedGannLevel(
+    axis: "price" | "time",
+    index: number,
+    patch: Partial<FibonacciLevelConfig>,
+  ) {
+    if (!selectedDrawing || selectedDrawing.locked || selectedDrawing.kind !== "gannGrid") {
+      return;
+    }
+
+    const settings = getGannGridSettings(selectedDrawing);
+    const key = axis === "price" ? "priceLevels" : "timeLevels";
+    const levels = settings[key].map((level, levelIndex) =>
+      levelIndex === index
+        ? {
+            ...level,
+            ...patch,
+            value:
+              patch.value !== undefined && Number.isFinite(patch.value)
+                ? Math.max(0, Math.min(1, patch.value))
+                : level.value,
+            color: normalizeColor(patch.color ?? level.color),
+          }
+        : level,
+    );
+
+    updateDrawing(selectedDrawing.id, {
+      gannGrid: { ...settings, [key]: levels },
+    });
+  }
+
+  function updateSelectedGannSetting(patch: Partial<GannGridSettings>) {
+    if (!selectedDrawing || selectedDrawing.locked || selectedDrawing.kind !== "gannGrid") {
+      return;
+    }
+
+    updateDrawing(selectedDrawing.id, {
+      gannGrid: { ...getGannGridSettings(selectedDrawing), ...patch },
+    });
+  }
+
+  function handleMonthlyGannHandleMouseDown(
+    handle: "start" | "end" | "top" | "bottom",
+    event: ReactMouseEvent,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const point = getDrawingPointFromMouse(moveEvent.clientX, moveEvent.clientY);
+      if (!point) return;
+
+      const currentSettings = useChartStore.getState().config.monthlyGann;
+      const patch: Partial<MonthlyGannConfig> = {};
+
+      if (handle === "start") {
+        patch.startDate = formatDateInputFromUnix(point.time);
+      } else if (handle === "end") {
+        patch.endDate = formatDateInputFromUnix(point.time);
+      } else if (handle === "top") {
+        patch.topPriceOverride = point.price;
+      } else {
+        patch.bottomPriceOverride = point.price;
+      }
+
+      setConfig({
+        monthlyGann: {
+          ...currentSettings,
+          ...patch,
+        },
+      });
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
   function updateSelectedDrawingValue(value: string) {
     if (!selectedDrawing || selectedDrawing.locked) return;
     const price = Number(value);
@@ -4648,6 +5769,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (!selectedDrawing) return;
     removeDrawing(selectedDrawing.id);
     setSelectedDrawingId(null);
+    setGannSettingsOpen(false);
   }
 
   function toggleSelectedDrawingLock() {
@@ -4661,6 +5783,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
   ) {
     if (drawing.id === "draft-drawing") return;
     event.stopPropagation();
+    if (drawing.id !== selectedDrawingId || drawing.kind !== "gannGrid") {
+      setGannSettingsOpen(false);
+    }
     setSelectedDrawingId(drawing.id);
   }
 
@@ -4686,7 +5811,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
   }
 
   function isFibonacciDrawing(drawing: ChartDrawing) {
-    return drawing.kind === "fibRetracement" || drawing.kind === "fibExtension";
+    return (
+      drawing.kind === "fibRetracement" ||
+      drawing.kind === "fibExtension" ||
+      drawing.kind === "gannGrid"
+    );
   }
 
   function renderLine(
@@ -5112,17 +6241,6 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     return (
       <g key={drawing.id}>
-        {!isDraft && (
-          <rect
-            x={left}
-            y={top}
-            width={width}
-            height={height}
-            fill="transparent"
-            className="pointer-events-auto cursor-pointer"
-            onClick={(event) => selectDrawing(drawing, event)}
-          />
-        )}
         {profile && (
           <>
             <rect
@@ -5144,6 +6262,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
               strokeOpacity={profileOpacity}
               className="pointer-events-none"
             />
+            {!isDraft && (
+              <line
+                x1={profile.left}
+                y1={top}
+                x2={profile.left}
+                y2={bottom}
+                stroke="transparent"
+                strokeWidth={14}
+                className="pointer-events-auto cursor-pointer"
+                onClick={(event) => selectDrawing(drawing, event)}
+              />
+            )}
             {profile.bins.map((bin, index) => {
               const x = profile.left;
               if (!bin.inValueArea) {
@@ -5250,6 +6380,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   ) {
     const visible = drawing.id === "draft-drawing" || drawing.id === selectedDrawingId;
     if (!visible) return null;
+    const isDraft = drawing.id === "draft-drawing";
 
     return points.map((point, index) => (
       <circle
@@ -5260,7 +6391,19 @@ export function PriceChart({ symbol, timeframe }: Props) {
         fill={TV_COLORS.bg}
         stroke={FIXED_VOLUME_PROFILE_ANCHOR_COLOR}
         strokeWidth={2.5}
-        className="pointer-events-none"
+        className={
+          isDraft
+            ? "pointer-events-none"
+            : drawing.locked
+            ? "pointer-events-auto cursor-pointer"
+            : "pointer-events-auto cursor-move"
+        }
+        onMouseDown={
+          isDraft || drawing.locked
+            ? undefined
+            : (event) => handlePointMouseDown(drawing.id, index, event)
+        }
+        onClick={isDraft ? undefined : (event) => selectDrawing(drawing, event)}
       />
     ));
   }
@@ -5627,6 +6770,178 @@ export function PriceChart({ symbol, timeframe }: Props) {
     );
   }
 
+  function renderGannGridShape(drawing: ChartDrawing, points: ScreenPoint[]) {
+    const [a, b] = points;
+    if (!a || !b) return null;
+
+    const isDraft = drawing.id === "draft-drawing";
+    const isSelected = drawing.id === selectedDrawingId;
+    const settings = getGannGridSettings(drawing);
+    const x = Math.min(a.x, b.x);
+    const y = Math.min(a.y, b.y);
+    const width = Math.abs(b.x - a.x);
+    const height = Math.abs(b.y - a.y);
+    const fillOpacity = getDrawingFillOpacity(drawing) / 100;
+    const lineOpacity = Math.max(0, Math.min(1, settings.lineOpacity / 100));
+    const priceLevels = settings.priceLevels.filter((level) => level.enabled);
+    const timeLevels = settings.timeLevels.filter((level) => level.enabled);
+    const levelLabel = (value: number) =>
+      value === 0 || value === 1
+        ? String(value)
+        : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    const priceLevelY = (value: number) => y + height * (1 - value);
+    const midpointX = x + width * 0.5;
+    const midpointY = priceLevelY(0.5);
+    const handlePoints = [
+      { key: "nw", x, y },
+      { key: "n", x: midpointX, y },
+      { key: "ne", x: x + width, y },
+      { key: "w", x, y: midpointY },
+      { key: "e", x: x + width, y: midpointY },
+      { key: "sw", x, y: y + height },
+      { key: "s", x: midpointX, y: y + height },
+      { key: "se", x: x + width, y: y + height },
+    ] as const;
+
+    return (
+      <g key={drawing.id}>
+        {!isDraft && (
+          <rect
+            x={x}
+            y={y}
+            width={width}
+            height={height}
+            fill="transparent"
+            className={`pointer-events-auto ${drawing.locked ? "cursor-pointer" : "cursor-move"}`}
+            onMouseDown={(event) => handleDrawingMouseDown(drawing, event)}
+            onClick={(event) => selectDrawing(drawing, event)}
+          />
+        )}
+        {settings.showTimeBackground &&
+          timeLevels.slice(0, -1).map((level, index) => {
+            const nextLevel = timeLevels[index + 1];
+            if (!nextLevel) return null;
+            const x1 = x + width * level.value;
+            const x2 = x + width * nextLevel.value;
+            return (
+              <rect
+                key={`${drawing.id}-gann-time-bg-${index}`}
+                x={Math.min(x1, x2)}
+                y={y}
+                width={Math.abs(x2 - x1)}
+                height={height}
+                fill={level.color}
+                fillOpacity={fillOpacity}
+                className="pointer-events-none"
+              />
+            );
+          })}
+        {settings.showPriceBackground &&
+          priceLevels.slice(0, -1).map((level, index) => {
+            const nextLevel = priceLevels[index + 1];
+            if (!nextLevel) return null;
+            const y1 = priceLevelY(level.value);
+            const y2 = priceLevelY(nextLevel.value);
+            return (
+              <rect
+                key={`${drawing.id}-gann-price-bg-${index}`}
+                x={x}
+                y={Math.min(y1, y2)}
+                width={width}
+                height={Math.abs(y2 - y1)}
+                fill={level.color}
+                fillOpacity={fillOpacity * 0.6}
+                className="pointer-events-none"
+              />
+            );
+          })}
+        <rect
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          fill="none"
+          stroke={isSelected ? TV_COLORS.blue : normalizeColor(drawing.color)}
+          strokeOpacity={isSelected ? Math.max(0.35, lineOpacity) : lineOpacity}
+          strokeWidth={isSelected ? 1.25 : 1}
+          className="pointer-events-none"
+        />
+        {timeLevels.map((level, index) => {
+          const lineX = x + width * level.value;
+          return (
+            <g key={`${drawing.id}-gann-time-${index}`}>
+              <line
+                x1={lineX}
+                y1={y}
+                x2={lineX}
+                y2={y + height}
+                stroke={level.color}
+                strokeOpacity={lineOpacity}
+                strokeWidth={1.2}
+                className="pointer-events-none"
+              />
+              {settings.showTopLabels && (
+                <text x={lineX} y={y - 7} textAnchor="middle" fill={level.color} opacity={lineOpacity} fontSize={10} className="pointer-events-none">
+                  {levelLabel(level.value)}
+                </text>
+              )}
+              {settings.showBottomLabels && (
+                <text x={lineX} y={y + height + 14} textAnchor="middle" fill={level.color} opacity={lineOpacity} fontSize={10} className="pointer-events-none">
+                  {levelLabel(level.value)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {priceLevels.map((level, index) => {
+          const lineY = priceLevelY(level.value);
+          return (
+            <g key={`${drawing.id}-gann-price-${index}`}>
+              <line
+                x1={x}
+                y1={lineY}
+                x2={x + width}
+                y2={lineY}
+                stroke={level.color}
+                strokeOpacity={lineOpacity}
+                strokeWidth={1.2}
+                className="pointer-events-none"
+              />
+              {settings.showLeftLabels && (
+                <text x={x - 7} y={lineY + 3} textAnchor="end" fill={level.color} opacity={lineOpacity} fontSize={10} className="pointer-events-none">
+                  {levelLabel(level.value)}
+                </text>
+              )}
+              {settings.showRightLabels && (
+                <text x={x + width + 7} y={lineY + 3} textAnchor="start" fill={level.color} opacity={lineOpacity} fontSize={10} className="pointer-events-none">
+                  {levelLabel(level.value)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {isSelected && !drawing.locked
+          ? handlePoints.map((handle) => (
+              <circle
+                key={`${drawing.id}-gann-${handle.key}`}
+                cx={handle.x}
+                cy={handle.y}
+                r={5}
+                fill={TV_COLORS.bg}
+                stroke={TV_COLORS.blue}
+                strokeWidth={2}
+                className="pointer-events-auto cursor-move"
+                onMouseDown={(event) =>
+                  handleRectangleResizeMouseDown(drawing, handle.key, event)
+                }
+              />
+            ))
+          : null}
+        {isDraft ? renderPointHandles(drawing, points) : null}
+      </g>
+    );
+  }
+
   function renderPositionShape(
     drawing: ChartDrawing,
     points: ScreenPoint[],
@@ -5653,8 +6968,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
       side === "long"
         ? a.price - riskDistance
         : a.price + riskDistance;
-    const targetY = candleSeriesRef.current?.priceToCoordinate(targetPrice);
-    const stopY = candleSeriesRef.current?.priceToCoordinate(stopPrice);
+    const targetY = mainPriceToY(targetPrice);
+    const stopY = mainPriceToY(stopPrice);
     if (targetY === null || targetY === undefined || stopY === null || stopY === undefined) {
       return <g key={drawing.id}>{renderPointHandles(drawing, points)}</g>;
     }
@@ -5990,6 +7305,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
       return renderFibonacciShape(drawing, points);
     }
 
+    if (drawing.kind === "gannGrid") {
+      return renderGannGridShape(drawing, points);
+    }
+
     if (drawing.kind === "longPosition" || drawing.kind === "shortPosition") {
       if (!b) return <g key={key}>{renderPointHandles(drawing, points)}</g>;
       return renderPositionShape(
@@ -6091,8 +7410,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
   ) {
     const aX = timeToCoordinateSafe(measure.a.time);
     const bX = timeToCoordinateSafe(measure.b.time);
-    const aY = candleSeriesRef.current.priceToCoordinate(measure.a.price);
-    const bY = candleSeriesRef.current.priceToCoordinate(measure.b.price);
+    const aY = mainPriceToY(measure.a.price);
+    const bY = mainPriceToY(measure.b.price);
 
     if (aX !== null && bX !== null && aY !== null && bY !== null) {
       const priceDiff = measure.b.price - measure.a.price;
@@ -6125,7 +7444,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
   return (
     <div
-      className="relative h-full w-full"
+      className="relative flex h-full w-full flex-1 flex-col"
       style={{ backgroundColor: chartTheme.background }}
     >
       <div
@@ -6160,6 +7479,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
           />
         </svg>
       )}
+      {emaCross2Fill && (
+        <svg
+          className="pointer-events-none absolute left-0 top-0 z-[5] w-full"
+          style={{ height: emaCross2Fill.height, overflow: "hidden" }}
+        >
+          <path
+            d={emaCross2Fill.path}
+            fill={emaCross2Fill.color}
+            fillOpacity={emaCross2Fill.opacity}
+          />
+        </svg>
+      )}
       {indicators.rsi &&
         !hidden.rsi &&
         rsiPane &&
@@ -6180,6 +7511,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         rsiZoneFills.length > 0 ||
         rsiDivergenceMarkers.length > 0 ||
         volumeProfile !== null ||
+        monthlyGannBoxes.length > 0 ||
         pmRangeOverlay !== null) &&
         overlayWidth > 0 &&
         overlayHeight > 0 && (
@@ -6212,6 +7544,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
               <stop offset="100%" stopColor={TV_COLORS.red} stopOpacity="0.68" />
             </linearGradient>
           </defs>
+          {fixedVolumeProfileDrawings.map(({ drawing, points }) =>
+            renderDrawing(drawing, points),
+          )}
           {volumeProfile && (
             <g className="pointer-events-none">
               {volumeProfile.bins.map((bin, index) => {
@@ -6272,6 +7607,111 @@ export function PriceChart({ symbol, timeframe }: Props) {
               </text>
             </g>
           )}
+          {monthlyGannBoxes.map((box) => (
+            <g key={`monthly-gann-${box.key}`} className="pointer-events-none">
+              <rect
+                x={box.x}
+                y={box.y}
+                width={box.width}
+                height={box.height}
+                fill={box.fillColor}
+                fillOpacity={box.fillOpacity}
+                stroke={box.color}
+                strokeOpacity={box.lineOpacity}
+                strokeWidth={1}
+              />
+              {box.timeLevels.map((level) => (
+                <line
+                  key={`monthly-gann-${box.key}-time-${level.value}`}
+                  x1={level.x}
+                  y1={box.y}
+                  x2={level.x}
+                  y2={box.y + box.height}
+                  stroke={box.color}
+                  strokeOpacity={box.lineOpacity}
+                  strokeWidth={1}
+                />
+              ))}
+              {box.levels.map((level) => (
+                <g key={`monthly-gann-${box.key}-price-${level.value}`}>
+                  <line
+                    x1={box.x}
+                    y1={level.y}
+                    x2={box.x + box.width}
+                    y2={level.y}
+                    stroke={box.color}
+                    strokeOpacity={box.lineOpacity}
+                    strokeWidth={1}
+                  />
+                  {config.monthlyGann.showLabels && (
+                    <>
+                      <text
+                        x={box.x - 7}
+                        y={level.y + 3}
+                        fill={box.color}
+                        opacity={box.lineOpacity}
+                        fontSize={10}
+                        textAnchor="end"
+                        paintOrder="stroke"
+                        stroke={TV_COLORS.bg}
+                        strokeWidth={2}
+                      >
+                        {formatGannLevelLabel(level.value)}
+                      </text>
+                      <text
+                        x={box.x + box.width + 7}
+                        y={level.y + 3}
+                        fill={box.color}
+                        opacity={box.lineOpacity}
+                        fontSize={10}
+                        textAnchor="start"
+                        paintOrder="stroke"
+                        stroke={TV_COLORS.bg}
+                        strokeWidth={2}
+                      >
+                        {formatGannLevelLabel(level.value)}
+                      </text>
+                    </>
+                  )}
+                </g>
+              ))}
+              {config.monthlyGann.showLabels && box.width > 44 && (
+                <text
+                  x={box.x + 5}
+                  y={box.y + 12}
+                  fill={box.color}
+                  opacity={box.lineOpacity}
+                  fontSize={10}
+                  fontWeight={700}
+                  paintOrder="stroke"
+                  stroke={TV_COLORS.bg}
+                  strokeWidth={2}
+                >
+                  {box.label}
+                </text>
+              )}
+              {[
+                { key: "start" as const, x: box.x, y: box.y + box.height },
+                { key: "end" as const, x: box.xQuarter, y: box.y },
+                { key: "top" as const, x: box.x + box.width / 2, y: box.y },
+                { key: "bottom" as const, x: box.x + box.width / 2, y: box.y + box.height },
+              ].map((handle) => (
+                <circle
+                  key={`monthly-gann-${box.key}-handle-${handle.key}`}
+                  cx={handle.x}
+                  cy={handle.y}
+                  r={5}
+                  fill={TV_COLORS.bg}
+                  stroke={TV_COLORS.blue}
+                  strokeWidth={2}
+                  className="pointer-events-auto cursor-move"
+                  onMouseDown={(event) =>
+                    handleMonthlyGannHandleMouseDown(handle.key, event)
+                  }
+                />
+              ))}
+            </g>
+          ))}
           {rsiZoneFills.map((fill, index) => (
             <path
               key={`rsi-zone-${index}`}
@@ -6417,7 +7857,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
               </text>
             );
           })}
-          {projectedDrawings.map(({ drawing, points }) =>
+          {foregroundDrawings.map(({ drawing, points }) =>
             renderDrawing(drawing, points),
           )}
           {swingMarkers.map((marker) => {
@@ -6500,6 +7940,110 @@ export function PriceChart({ symbol, timeframe }: Props) {
       )}
       {measureRender}
 
+      <button
+        type="button"
+        aria-label="Configuracion del grafico"
+        title="Configuracion"
+        onClick={(event) => {
+          event.stopPropagation();
+          setChartSettingsOpen((open) => !open);
+          setContextMenu(null);
+        }}
+        className={`absolute bottom-0 right-0 z-30 flex h-7 w-7 items-center justify-center rounded-sm border border-tv-border bg-tv-bg/40 text-tv-text-muted shadow-lg backdrop-blur hover:bg-tv-panel-hover hover:text-tv-text ${
+          chartSettingsOpen ? "bg-tv-panel-hover text-tv-text" : ""
+        }`}
+      >
+        <Settings className="h-3.5 w-3.5" />
+      </button>
+
+      {chartSettingsOpen && (
+        <div
+          onClick={(event) => event.stopPropagation()}
+          className="absolute bottom-9 right-0 z-40 w-[358px] max-w-[calc(100vw-24px)] overflow-hidden rounded-sm border border-[#2f2f2f] bg-[#202020] text-tv-text shadow-[0_18px_60px_rgba(0,0,0,0.55)]"
+        >
+          <div className="flex h-14 items-center justify-between border-b border-[#2a2a2a] px-4">
+            <span className="text-sm font-semibold text-[#dcdcdc]">
+              Configuracion
+            </span>
+            <button
+              type="button"
+              aria-label="Cerrar configuracion"
+              title="Cerrar"
+              onClick={() => setChartSettingsOpen(false)}
+              className="flex h-8 w-8 items-center justify-center rounded-sm text-[#b8b8b8] hover:bg-[#2b2b2b] hover:text-white"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="px-3 pb-5 pt-5">
+            <div className="mb-5 text-[10px] font-medium uppercase tracking-wide text-[#9a9a9a]">
+              Velas
+            </div>
+
+            <label className="mb-5 flex items-center gap-2 text-sm font-semibold text-[#d5d5d5]">
+              <input
+                type="checkbox"
+                checked={chartVisualSettings.colorBarsByPreviousClose}
+                onChange={(event) =>
+                  updateChartVisualSettings({
+                    colorBarsByPreviousClose: event.target.checked,
+                  })
+                }
+                className="h-[18px] w-[18px] cursor-pointer rounded-[3px] border border-[#707070] accent-[#f2f2f2]"
+              />
+              Color de barras en funcion del cierre anterior
+            </label>
+
+            <div className="space-y-4">
+              {renderCandleColorRow({
+                label: "Cuerpo",
+                enabled: chartVisualSettings.candleBodyVisible,
+                enabledKey: "candleBodyVisible",
+                upColor: chartVisualSettings.candleBodyUpColor,
+                downColor: chartVisualSettings.candleBodyDownColor,
+                upColorKey: "candleBodyUpColor",
+                downColorKey: "candleBodyDownColor",
+              })}
+              {renderCandleColorRow({
+                label: "Bordes",
+                enabled: chartVisualSettings.candleBorderVisible,
+                enabledKey: "candleBorderVisible",
+                upColor: chartVisualSettings.candleBorderUpColor,
+                downColor: chartVisualSettings.candleBorderDownColor,
+                upColorKey: "candleBorderUpColor",
+                downColorKey: "candleBorderDownColor",
+              })}
+              {renderCandleColorRow({
+                label: "Mecha",
+                enabled: chartVisualSettings.candleWickVisible,
+                enabledKey: "candleWickVisible",
+                upColor: chartVisualSettings.candleWickUpColor,
+                downColor: chartVisualSettings.candleWickDownColor,
+                upColorKey: "candleWickUpColor",
+                downColorKey: "candleWickDownColor",
+              })}
+            </div>
+
+            <div className="mt-5 border-t border-[#2b2b2b] pt-4">
+              <label className="flex items-center gap-2 text-sm font-semibold text-[#d5d5d5]">
+                <input
+                  type="checkbox"
+                  checked={chartVisualSettings.gridVisible}
+                  onChange={(event) =>
+                    updateChartVisualSettings({
+                      gridVisible: event.target.checked,
+                    })
+                  }
+                  className="h-[18px] w-[18px] cursor-pointer rounded-[3px] border border-[#707070] accent-[#f2f2f2]"
+                />
+                Cuadricula
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedDrawing && selectedDrawing.kind !== "fixedVolumeProfile" && (
         <div
           onClick={(event) => event.stopPropagation()}
@@ -6517,6 +8061,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
             />
           )}
           {selectedDrawing.kind !== "vline" &&
+            selectedDrawing.kind !== "gannGrid" &&
             !isFibonacciDrawing(selectedDrawing) && (
             <input
               aria-label="Valor del dibujo"
@@ -6567,7 +8112,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
               />
             </>
           )}
-          {!isChannelDrawing(selectedDrawing) && (
+          {!isChannelDrawing(selectedDrawing) && selectedDrawing.kind !== "gannGrid" && (
             <input
               aria-label="Transparencia del trazo"
               title="Opacidad"
@@ -6578,6 +8123,23 @@ export function PriceChart({ symbol, timeframe }: Props) {
               disabled={selectedDrawing.locked}
               onChange={(event) =>
                 updateSelectedDrawingBorderOpacity(event.target.value)
+              }
+              className="h-7 w-20 accent-tv-blue disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          )}
+          {selectedDrawing.kind === "gannGrid" && selectedGannSettings && (
+            <input
+              aria-label="Transparencia de lineas Gann"
+              title="Lineas"
+              type="range"
+              min="0"
+              max="100"
+              value={selectedGannSettings.lineOpacity}
+              disabled={selectedDrawing.locked}
+              onChange={(event) =>
+                updateSelectedGannSetting({
+                  lineOpacity: Number(event.target.value),
+                })
               }
               className="h-7 w-20 accent-tv-blue disabled:cursor-not-allowed disabled:opacity-50"
             />
@@ -6638,11 +8200,29 @@ export function PriceChart({ symbol, timeframe }: Props) {
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
+          {selectedDrawing.kind === "gannGrid" && (
+            <button
+              type="button"
+              aria-label="Configurar cuadricula de Gann"
+              title="Configuracion"
+              onClick={() => setGannSettingsOpen((open) => !open)}
+              className={`flex h-7 w-7 items-center justify-center rounded-sm ${
+                gannSettingsOpen
+                  ? "bg-tv-panel-hover text-tv-blue"
+                  : "text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text"
+              }`}
+            >
+              <Settings className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             aria-label="Cerrar panel"
             title="Cerrar"
-            onClick={() => setSelectedDrawingId(null)}
+            onClick={() => {
+              setSelectedDrawingId(null);
+              setGannSettingsOpen(false);
+            }}
             className="flex h-7 w-7 items-center justify-center rounded-sm text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text"
           >
             <X className="h-3.5 w-3.5" />
@@ -6866,6 +8446,176 @@ export function PriceChart({ symbol, timeframe }: Props) {
         </div>
       )}
 
+      {selectedDrawing?.kind === "gannGrid" && selectedGannSettings && gannSettingsOpen && (
+        <div
+          onClick={(event) => event.stopPropagation()}
+          className="absolute right-14 top-24 z-40 max-h-[calc(100vh-120px)] w-[356px] overflow-y-auto rounded-sm border border-tv-border bg-[#1f1f1f] p-3 text-xs text-tv-text shadow-xl"
+        >
+          <div className="mb-3 flex items-center justify-between border-b border-tv-border pb-2">
+            <span className="font-semibold">Cuadricula de Gann</span>
+            <button
+              type="button"
+              aria-label="Cerrar configuracion de Gann"
+              onClick={() => setGannSettingsOpen(false)}
+              className="text-tv-text-muted hover:text-tv-text"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mb-3 grid grid-cols-3 gap-1 border-b border-tv-border text-[11px] font-semibold text-tv-text-muted">
+            <span className="border-b-2 border-tv-text pb-1 text-tv-text">Estilo</span>
+            <span className="pb-1">Coordenadas</span>
+            <span className="pb-1">Visibilidad</span>
+          </div>
+
+          <div className="mb-5 text-[10px] font-semibold uppercase tracking-wide text-tv-text-muted">
+            Niveles de precios
+          </div>
+          <div className="mb-4 grid grid-cols-2 gap-x-8 gap-y-2">
+            {selectedGannSettings.priceLevels.map((level, index) => (
+              <div key={`gann-price-${index}`} className="grid grid-cols-[18px_1fr_30px] items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={level.enabled}
+                  disabled={selectedDrawing.locked}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("price", index, {
+                      enabled: event.target.checked,
+                    })
+                  }
+                  className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step="0.001"
+                  value={level.value}
+                  disabled={selectedDrawing.locked || !level.enabled}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("price", index, {
+                      value: Number(event.target.value),
+                    })
+                  }
+                  className="h-7 min-w-0 rounded border border-tv-border bg-tv-bg px-2 text-xs tabular-nums text-tv-text outline-none disabled:opacity-50"
+                />
+                <input
+                  type="color"
+                  value={level.color}
+                  disabled={selectedDrawing.locked || !level.enabled}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("price", index, {
+                      color: event.target.value,
+                    })
+                  }
+                  className="h-7 w-7 cursor-pointer rounded border border-tv-border bg-tv-bg p-1 disabled:opacity-50"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3 border-b border-tv-border pb-4">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showLeftLabels} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showLeftLabels: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Etiquetas de la izquierda
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showRightLabels} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showRightLabels: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Etiquetas de la derecha
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showPriceBackground} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showPriceBackground: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Fondo de precios
+            </label>
+            <label className="grid grid-cols-[54px_1fr] items-center gap-2">
+              <span>Opacidad</span>
+              <input type="range" min={0} max={60} value={getDrawingFillOpacity(selectedDrawing)} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedDrawingFillOpacity(event.target.value)} className="accent-tv-blue disabled:opacity-50" />
+            </label>
+            <label className="grid grid-cols-[96px_1fr_34px] items-center gap-2">
+              <span>Lineas</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={selectedGannSettings.lineOpacity}
+                disabled={selectedDrawing.locked}
+                onChange={(event) =>
+                  updateSelectedGannSetting({
+                    lineOpacity: Number(event.target.value),
+                  })
+                }
+                className="accent-tv-blue disabled:opacity-50"
+              />
+              <span className="text-right tabular-nums text-tv-text-muted">
+                {selectedGannSettings.lineOpacity}
+              </span>
+            </label>
+          </div>
+
+          <div className="mb-3 mt-5 text-[10px] font-semibold uppercase tracking-wide text-tv-text-muted">
+            Niveles de tiempo
+          </div>
+          <div className="mb-4 grid grid-cols-2 gap-x-8 gap-y-2">
+            {selectedGannSettings.timeLevels.map((level, index) => (
+              <div key={`gann-time-${index}`} className="grid grid-cols-[18px_1fr_30px] items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={level.enabled}
+                  disabled={selectedDrawing.locked}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("time", index, {
+                      enabled: event.target.checked,
+                    })
+                  }
+                  className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step="0.001"
+                  value={level.value}
+                  disabled={selectedDrawing.locked || !level.enabled}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("time", index, {
+                      value: Number(event.target.value),
+                    })
+                  }
+                  className="h-7 min-w-0 rounded border border-tv-border bg-tv-bg px-2 text-xs tabular-nums text-tv-text outline-none disabled:opacity-50"
+                />
+                <input
+                  type="color"
+                  value={level.color}
+                  disabled={selectedDrawing.locked || !level.enabled}
+                  onChange={(event) =>
+                    updateSelectedGannLevel("time", index, {
+                      color: event.target.value,
+                    })
+                  }
+                  className="h-7 w-7 cursor-pointer rounded border border-tv-border bg-tv-bg p-1 disabled:opacity-50"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showTopLabels} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showTopLabels: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Etiquetas superiores
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showBottomLabels} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showBottomLabels: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Etiquetas inferiores
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedGannSettings.showTimeBackground} disabled={selectedDrawing.locked} onChange={(event) => updateSelectedGannSetting({ showTimeBackground: event.target.checked })} className="h-3.5 w-3.5 accent-tv-blue disabled:opacity-50" />
+              Fondo de tiempo
+            </label>
+          </div>
+        </div>
+      )}
+
       {contextMenu && (
         <div
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -6883,12 +8633,19 @@ export function PriceChart({ symbol, timeframe }: Props) {
         </div>
       )}
 
-      {countdownTop !== null && candleCountdown && (
+      {priceClockLabelTop !== null && lastPrice && (
         <div
-          style={{ top: countdownTop, right: 0 }}
-          className="pointer-events-none absolute z-20 h-4 min-w-[54px] rounded-l-sm border border-r-0 border-tv-border bg-tv-panel px-1 text-center text-[9px] font-semibold leading-4 tabular-nums text-tv-text shadow-md"
+          style={{ top: priceClockLabelTop, right: 0, backgroundColor: priceClockLabelColor }}
+          className="pointer-events-none absolute z-20 min-w-[64px] overflow-hidden rounded-l-sm text-center font-semibold tabular-nums text-white shadow-md"
         >
-          {candleCountdown}
+          <div className="h-[18px] px-1.5 text-[10px] leading-[18px]">
+            {formatSymbolPrice(symbol, lastPrice.value)}
+          </div>
+          {candleCountdown && (
+            <div className="h-[16px] border-t border-white/20 bg-black/12 px-1.5 text-[9px] leading-[16px]">
+              {candleCountdown}
+            </div>
+          )}
         </div>
       )}
 
@@ -6959,37 +8716,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
         {/* Indicator pills for the main pane (fixed position below price) */}
         <div className="mt-1 flex flex-col items-start gap-1">
-          {indicators.ema20 && (
+          {indicators.liquidityBlocks && (
             <IndicatorPill
-              name={`EMA ${config.ema20}`}
-              value={lastValues.ema20 !== undefined ? formatPrice(lastValues.ema20) : undefined}
-              color={INDICATOR_COLORS.ema20}
-              hidden={hidden.ema20}
-              onToggleHide={() => toggleHidden("ema20")}
-              onSettings={() => setSettingsTarget("ema20")}
-              onRemove={() => removeIndicator("ema20")}
-            />
-          )}
-          {indicators.ema50 && (
-            <IndicatorPill
-              name={`EMA ${config.ema50}`}
-              value={lastValues.ema50 !== undefined ? formatPrice(lastValues.ema50) : undefined}
-              color={INDICATOR_COLORS.ema50}
-              hidden={hidden.ema50}
-              onToggleHide={() => toggleHidden("ema50")}
-              onSettings={() => setSettingsTarget("ema50")}
-              onRemove={() => removeIndicator("ema50")}
-            />
-          )}
-          {indicators.ema200 && (
-            <IndicatorPill
-              name={`EMA ${config.ema200}`}
-              value={lastValues.ema200 !== undefined ? formatPrice(lastValues.ema200) : undefined}
-              color={INDICATOR_COLORS.ema200}
-              hidden={hidden.ema200}
-              onToggleHide={() => toggleHidden("ema200")}
-              onSettings={() => setSettingsTarget("ema200")}
-              onRemove={() => removeIndicator("ema200")}
+              name="Bloques de Liquidez"
+              color={config.liquidityBlocks.buyColor}
+              hidden={hidden.liquidityBlocks}
+              onToggleHide={() => toggleHidden("liquidityBlocks")}
+              onSettings={() => setSettingsTarget("liquidityBlocks")}
+              onRemove={() => removeIndicator("liquidityBlocks")}
             />
           )}
           {indicators.emaCross && (
@@ -7003,6 +8737,30 @@ export function PriceChart({ symbol, timeframe }: Props) {
               onToggleHide={() => toggleHidden("emaCross")}
               onSettings={() => setSettingsTarget("emaCross")}
               onRemove={() => removeIndicator("emaCross")}
+            />
+          )}
+          {indicators.emaCross2 && (
+            <IndicatorPill
+              name={`EMA Cross 7/25 ${emaCross2Lines
+                .filter((line) => line.enabled)
+                .map((line) => line.period)
+                .join("/") || "off"}`}
+              color={emaCross2Lines[0]?.color ?? INDICATOR_COLORS.emaCross2}
+              hidden={hidden.emaCross2}
+              onToggleHide={() => toggleHidden("emaCross2")}
+              onSettings={() => setSettingsTarget("emaCross2")}
+              onRemove={() => removeIndicator("emaCross2")}
+            />
+          )}
+          {indicators.vwapBands && (
+            <IndicatorPill
+              name={`VWAP+B (${config.vwapBands.anchor})`}
+              value={lastValues.vwapBands !== undefined ? formatPrice(lastValues.vwapBands) : undefined}
+              color={config.vwapBands.color}
+              hidden={hidden.vwapBands}
+              onToggleHide={() => toggleHidden("vwapBands")}
+              onSettings={() => setSettingsTarget("vwapBands")}
+              onRemove={() => removeIndicator("vwapBands")}
             />
           )}
           {indicators.volume && (
@@ -7025,6 +8783,17 @@ export function PriceChart({ symbol, timeframe }: Props) {
               onToggleHide={() => toggleHidden("volumeProfile")}
               onSettings={() => setSettingsTarget("volumeProfile")}
               onRemove={() => removeIndicator("volumeProfile")}
+            />
+          )}
+          {indicators.monthlyGann && (
+            <IndicatorPill
+              name="Gann mensual"
+              value={monthlyGannBoxes.length > 0 ? `${monthlyGannBoxes.length}` : undefined}
+              color={INDICATOR_COLORS.monthlyGann}
+              hidden={hidden.monthlyGann}
+              onToggleHide={() => toggleHidden("monthlyGann")}
+              onSettings={() => setSettingsTarget("monthlyGann")}
+              onRemove={() => removeIndicator("monthlyGann")}
             />
           )}
           {indicators.swingPatterns && (

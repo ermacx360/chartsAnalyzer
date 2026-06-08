@@ -5,8 +5,8 @@ export interface IndexInstrument {
   yahooSymbol: string;
   futuresSymbol?: string;
   futuresSource?: string;
-  bingxSymbol?: string;
   capitalEpic?: string;
+  simplefxSymbol?: string;
   finnhubSymbol: string;
   name: string;
   region: string;
@@ -17,9 +17,9 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
     symbol: "SPX",
     yahooSymbol: "^GSPC",
     futuresSymbol: "ES=F",
-    futuresSource: "Capital.com CFD",
-    bingxSymbol: "NCSISP5002USD-USDT",
+    futuresSource: "SimpleFX",
     capitalEpic: "US500",
+    simplefxSymbol: "US500",
     finnhubSymbol: "^GSPC",
     name: "S&P 500 Futures",
     region: "Estados Unidos",
@@ -28,9 +28,9 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
     symbol: "NDX",
     yahooSymbol: "^NDX",
     futuresSymbol: "NQ=F",
-    futuresSource: "Capital.com CFD",
-    bingxSymbol: "NCSINASDAQ1002USD-USDT",
+    futuresSource: "SimpleFX",
     capitalEpic: "US100",
+    simplefxSymbol: "US100",
     finnhubSymbol: "^NDX",
     name: "Nasdaq 100 Futures",
     region: "Estados Unidos",
@@ -46,9 +46,9 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
     symbol: "DJI",
     yahooSymbol: "^DJI",
     futuresSymbol: "YM=F",
-    futuresSource: "Capital.com CFD",
-    bingxSymbol: "NCSIDOWJONES2USD-USDT",
+    futuresSource: "SimpleFX",
     capitalEpic: "US30",
+    simplefxSymbol: "US30",
     finnhubSymbol: "^DJI",
     name: "Dow Jones Futures",
     region: "Estados Unidos",
@@ -57,9 +57,9 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
     symbol: "RUT",
     yahooSymbol: "^RUT",
     futuresSymbol: "RTY=F",
-    futuresSource: "Capital.com CFD",
-    bingxSymbol: "NCSIRUSSELL20002USD-USDT",
+    futuresSource: "SimpleFX",
     capitalEpic: "RTY",
+    simplefxSymbol: "US2000",
     finnhubSymbol: "^RUT",
     name: "Russell 2000 Futures",
     region: "Estados Unidos",
@@ -68,8 +68,8 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
     symbol: "N225",
     yahooSymbol: "^N225",
     futuresSymbol: "NKD=F",
-    futuresSource: "CME Futures",
-    bingxSymbol: "NCSINIKKEI2252USD-USDT",
+    futuresSource: "SimpleFX",
+    simplefxSymbol: "JP225",
     finnhubSymbol: "^N225",
     name: "Nikkei 225 Futures",
     region: "Japon",
@@ -116,6 +116,8 @@ export const INDEX_INSTRUMENTS: IndexInstrument[] = [
   {
     symbol: "HSI",
     yahooSymbol: "^HSI",
+    futuresSource: "SimpleFX",
+    simplefxSymbol: "HK50",
     finnhubSymbol: "^HSI",
     name: "Hang Seng",
     region: "Hong Kong",
@@ -171,7 +173,7 @@ export const INDEX_SYMBOLS: SymbolInfo[] = INDEX_INSTRUMENTS.map((index) => ({
   region: index.region,
 }));
 
-export const MAIN_INDEX_SYMBOLS = ["SPX", "NDX", "DJI", "RUT", "N225"] as const;
+export const MAIN_INDEX_SYMBOLS = ["SPX", "NDX", "DJI", "RUT", "N225", "HSI"] as const;
 
 const INDEX_BY_SYMBOL = new Map(
   INDEX_INSTRUMENTS.map((index) => [index.symbol, index]),

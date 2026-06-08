@@ -19,6 +19,7 @@ import {
   MoveVertical,
   Paintbrush,
   PenLine,
+  Grid3X3,
   Route,
   Ruler,
   Slash,
@@ -115,6 +116,7 @@ const FIBONACCI_TOOLS: LineToolDef[] = [
     icon: ListEnd,
     label: "Extension de Fibonacci en funcion de las tendencias",
   },
+  { key: "gannGrid", icon: Grid3X3, label: "Cuadricula de Gann" },
 ];
 
 const PROJECTION_TOOLS: LineToolDef[] = [

@@ -1,15 +1,18 @@
 import { getIndexInstrument } from "@/lib/market/indices";
 import { getStockInstrument } from "@/lib/market/stocks";
 import { getCommodityInstrument } from "@/lib/market/commodities";
+import { getForexInstrument } from "@/lib/market/forex";
 import type { Candle, Ticker24h, Timeframe } from "@/lib/binance/types";
 
 export const dynamic = "force-dynamic";
 
-const BINGX_BASE = "https://open-api.bingx.com";
 const CAPITAL_LIVE_BASE = "https://api-capital.backend-capital.com/api/v1";
 const CAPITAL_DEMO_BASE = "https://demo-api-capital.backend-capital.com/api/v1";
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_QUOTE_BASE = "https://query1.finance.yahoo.com/v7/finance/quote";
+const SIMPLEFX_CANDLES_BASE = "https://candles-core.simplefx.com/api/v3";
+const SIMPLEFX_QUOTES_BASE = "https://web-quotes-core.simplefx.com/api/v3";
 
 interface FinnhubCandleResponse {
   c?: number[];
@@ -32,38 +35,10 @@ interface FinnhubQuoteResponse {
   t?: number;
 }
 
-interface BingxKline {
-  open?: string;
-  close?: string;
-  high?: string;
-  low?: string;
-  volume?: string;
-  time?: number;
-}
-
-interface BingxKlinesResponse {
-  code?: number;
-  msg?: string;
-  data?: BingxKline[];
-}
-
-interface BingxTicker {
-  symbol?: string;
-  priceChange?: string;
-  priceChangePercent?: string;
-  lastPrice?: string;
-  highPrice?: string;
-  lowPrice?: string;
-  volume?: string;
-  quoteVolume?: string;
-  openTime?: number;
-  closeTime?: number;
-}
-
-interface BingxTickerResponse {
-  code?: number;
-  msg?: string;
-  data?: BingxTicker;
+interface FinnhubMetricResponse {
+  metric?: {
+    marketCapitalization?: number;
+  };
 }
 
 interface CapitalSession {
@@ -118,6 +93,7 @@ interface YahooChartResult {
     regularMarketDayHigh?: number;
     regularMarketDayLow?: number;
     regularMarketVolume?: number;
+    marketCap?: number;
   };
   indicators?: {
     quote?: YahooQuote[];
@@ -127,6 +103,23 @@ interface YahooChartResult {
 interface YahooChartResponse {
   chart?: {
     result?: YahooChartResult[];
+    error?: { description?: string };
+  };
+}
+
+interface YahooQuoteResult {
+  marketCap?: number;
+  regularMarketVolume?: number;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+}
+
+interface YahooQuoteResponse {
+  quoteResponse?: {
+    result?: YahooQuoteResult[];
     error?: { description?: string };
   };
 }
@@ -143,6 +136,34 @@ interface CapitalTimeframeQuery {
   resolution: string;
   max: number;
   aggregateSeconds?: number;
+}
+
+interface SimpleFxCandle {
+  time?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  size?: number;
+}
+
+interface SimpleFxCandlesResponse {
+  data?: SimpleFxCandle[];
+  code?: number;
+  message?: string;
+}
+
+interface SimpleFxQuote {
+  s?: string;
+  b?: number;
+  a?: number;
+  t?: number;
+}
+
+interface SimpleFxQuotesResponse {
+  data?: SimpleFxQuote[];
+  code?: number;
+  message?: string;
 }
 
 let capitalSession: CapitalSession | null = null;
@@ -266,25 +287,6 @@ function getTimeframeQuery(timeframe: Timeframe): TimeframeQuery {
   }
 }
 
-function getBingxInterval(timeframe: Timeframe) {
-  return timeframe === "1s" ? "1m" : timeframe;
-}
-
-function isLongHistoryTimeframe(timeframe: Timeframe) {
-  return (
-    timeframe === "1h" ||
-    timeframe === "2h" ||
-    timeframe === "4h" ||
-    timeframe === "6h" ||
-    timeframe === "8h" ||
-    timeframe === "12h" ||
-    timeframe === "1d" ||
-    timeframe === "3d" ||
-    timeframe === "1w" ||
-    timeframe === "1M"
-  );
-}
-
 function canUseDailyHistoryFallback(timeframe: Timeframe) {
   return (
     timeframe === "4h" ||
@@ -396,6 +398,42 @@ function getCapitalTimeframeQuery(
       return { resolution: "WEEK", max };
     case "1M":
       return null;
+  }
+}
+
+function getSimpleFxCandlePeriod(timeframe: Timeframe) {
+  switch (timeframe) {
+    case "1s":
+    case "1m":
+      return 60;
+    case "3m":
+      return 3 * 60;
+    case "5m":
+      return 5 * 60;
+    case "15m":
+      return 15 * 60;
+    case "30m":
+      return 30 * 60;
+    case "1h":
+      return 60 * 60;
+    case "2h":
+      return 2 * 60 * 60;
+    case "4h":
+      return 4 * 60 * 60;
+    case "6h":
+      return 6 * 60 * 60;
+    case "8h":
+      return 8 * 60 * 60;
+    case "12h":
+      return 12 * 60 * 60;
+    case "1d":
+      return 24 * 60 * 60;
+    case "3d":
+      return 3 * 24 * 60 * 60;
+    case "1w":
+      return 7 * 24 * 60 * 60;
+    case "1M":
+      return 30 * 24 * 60 * 60;
   }
 }
 
@@ -647,137 +685,6 @@ async function fetchFinnhub<T>(
   return (await res.json()) as T;
 }
 
-async function fetchBingx<T>(path: string, params: Record<string, string | number>) {
-  const url = new URL(`${BINGX_BASE}${path}`);
-  Object.entries(params).forEach(([key, value]) => {
-    url.searchParams.set(key, String(value));
-  });
-
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-
-  if (!res.ok) {
-    return null;
-  }
-
-  return (await res.json()) as T;
-}
-
-function parseBingxCandles(data: BingxKlinesResponse): Candle[] {
-  if (data.code !== 0 || !Array.isArray(data.data)) {
-    return [];
-  }
-
-  return data.data
-    .reduce<Candle[]>((candles, item) => {
-      const time = parseNumber(item.time);
-      const open = parseNumber(item.open);
-      const high = parseNumber(item.high);
-      const low = parseNumber(item.low);
-      const close = parseNumber(item.close);
-
-      if (
-        time === null ||
-        open === null ||
-        high === null ||
-        low === null ||
-        close === null
-      ) {
-        return candles;
-      }
-
-      candles.push({
-        time: Math.floor(time / 1000),
-        open,
-        high,
-        low,
-        close,
-        volume: parseNumber(item.volume) ?? 0,
-        isFinal: true,
-      });
-
-      return candles;
-    }, [])
-    .sort((a, b) => a.time - b.time);
-}
-
-async function fetchBingxCandles(
-  symbol: string,
-  timeframe: Timeframe,
-  limit: number,
-  beforeTime?: number,
-) {
-  const cappedLimit = Math.max(1, Math.min(30000, limit || 1000));
-  const pageLimit = 1440;
-  const pages: Candle[] = [];
-  let endTime = beforeTime !== undefined ? beforeTime * 1000 - 1 : undefined;
-
-  while (pages.length < cappedLimit) {
-    const currentLimit = Math.min(pageLimit, cappedLimit - pages.length);
-    const params: Record<string, string | number> = {
-      symbol,
-      interval: getBingxInterval(timeframe),
-      limit: currentLimit,
-    };
-
-    if (endTime !== undefined) {
-      params.endTime = endTime;
-    }
-
-    const data = await fetchBingx<BingxKlinesResponse>(
-      "/openApi/swap/v3/quote/klines",
-      params,
-    );
-    const candles = data ? parseBingxCandles(data) : [];
-
-    if (candles.length === 0) break;
-
-    pages.unshift(...candles);
-    endTime = candles[0].time * 1000 - 1;
-
-    if (candles.length < currentLimit) break;
-  }
-
-  return pages.slice(-cappedLimit).sort((a, b) => a.time - b.time);
-}
-
-async function fetchBingxTicker(
-  displaySymbol: string,
-  bingxSymbol: string,
-): Promise<Ticker24h | null> {
-  const response = await fetchBingx<BingxTickerResponse>(
-    "/openApi/swap/v2/quote/ticker",
-    { symbol: bingxSymbol },
-  );
-  const ticker = response?.data;
-
-  if (response?.code !== 0 || !ticker) {
-    return null;
-  }
-
-  const lastPrice = parseNumber(ticker.lastPrice);
-  const priceChange = parseNumber(ticker.priceChange);
-  const priceChangePercent = parseNumber(ticker.priceChangePercent);
-
-  if (lastPrice === null || priceChange === null || priceChangePercent === null) {
-    return null;
-  }
-
-  return {
-    symbol: displaySymbol,
-    lastPrice,
-    priceChange,
-    priceChangePercent,
-    highPrice: parseNumber(ticker.highPrice) ?? lastPrice,
-    lowPrice: parseNumber(ticker.lowPrice) ?? lastPrice,
-    volume: parseNumber(ticker.volume) ?? 0,
-    quoteVolume: parseNumber(ticker.quoteVolume) ?? 0,
-    market: "index",
-  };
-}
-
 function midpoint(bid: unknown, ask: unknown) {
   const parsedBid = parseNumber(bid);
   const parsedAsk = parseNumber(ask);
@@ -805,6 +712,132 @@ function getCapitalMarketPrice(market: CapitalMarket) {
   return midpoint(market.bid, market.ofr ?? market.offer);
 }
 
+function parseSimpleFxCandles(data: SimpleFxCandlesResponse): Candle[] {
+  if (data.code !== 200 || !Array.isArray(data.data)) {
+    return [];
+  }
+
+  return data.data
+    .reduce<Candle[]>((candles, item) => {
+      const time = parseNumber(item.time);
+      const open = parseNumber(item.open);
+      const high = parseNumber(item.high);
+      const low = parseNumber(item.low);
+      const close = parseNumber(item.close);
+
+      if (
+        time === null ||
+        open === null ||
+        high === null ||
+        low === null ||
+        close === null
+      ) {
+        return candles;
+      }
+
+      candles.push({
+        time,
+        open,
+        high,
+        low,
+        close,
+        volume: parseNumber(item.size) ?? 0,
+        isFinal: true,
+      });
+
+      return candles;
+    }, [])
+    .sort((a, b) => a.time - b.time);
+}
+
+async function fetchSimpleFxCandles(
+  simplefxSymbol: string | undefined,
+  timeframe: Timeframe,
+  limit: number,
+  beforeTime?: number,
+) {
+  if (!simplefxSymbol) return [];
+
+  const aggregateSeconds = timeframe === "3m" ? 3 * 60 : undefined;
+  const cPeriod = aggregateSeconds ? 60 : getSimpleFxCandlePeriod(timeframe);
+  const sourceLimit = aggregateSeconds ? limit * 3 : limit;
+  const totalLimit = getCandleLimit(sourceLimit, 3000);
+  const now = Math.floor(Date.now() / 1000);
+  const to = beforeTime !== undefined ? beforeTime - 1 : now;
+  const from = Math.max(
+    0,
+    to - cPeriod * totalLimit * 3,
+  );
+  const url = new URL(`${SIMPLEFX_CANDLES_BASE}/candles`);
+  url.searchParams.set("symbol", simplefxSymbol);
+  url.searchParams.set("cPeriod", String(cPeriod));
+  url.searchParams.set("timeFrom", String(from));
+  url.searchParams.set("timeTo", String(to));
+
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!res.ok) {
+    return [];
+  }
+
+  const data = (await res.json()) as SimpleFxCandlesResponse;
+  const candles = parseSimpleFxCandles(data)
+    .filter((candle) => beforeTime === undefined || candle.time < beforeTime)
+    .slice(-totalLimit);
+
+  return aggregateSeconds
+    ? aggregateCandles(candles, aggregateSeconds).slice(-getCandleLimit(limit))
+    : candles;
+}
+
+async function fetchSimpleFxTicker(
+  displaySymbol: string,
+  simplefxSymbol: string | undefined,
+  marketKind: Ticker24h["market"],
+): Promise<Ticker24h | null> {
+  if (!simplefxSymbol) return null;
+
+  const url = new URL(`${SIMPLEFX_QUOTES_BASE}/quotes`);
+  url.searchParams.append("symbols", simplefxSymbol);
+
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!res.ok) return null;
+
+  const data = (await res.json()) as SimpleFxQuotesResponse;
+  const quote = data.data?.find(
+    (item) => item.s?.toUpperCase() === simplefxSymbol.toUpperCase(),
+  );
+  const lastPrice = midpoint(quote?.b, quote?.a);
+
+  if (lastPrice === null) return null;
+
+  const candles = await fetchSimpleFxCandles(simplefxSymbol, "1d", 3);
+  const lastCandle = candles[candles.length - 1];
+  const previousCandle = candles[candles.length - 2] ?? lastCandle;
+  const previousClose = previousCandle?.close ?? lastCandle?.close ?? lastPrice;
+  const priceChange = lastPrice - previousClose;
+
+  return {
+    symbol: displaySymbol,
+    lastPrice,
+    priceChange,
+    priceChangePercent:
+      previousClose === 0 ? 0 : (priceChange / previousClose) * 100,
+    highPrice: Math.max(lastCandle?.high ?? lastPrice, lastPrice),
+    lowPrice: Math.min(lastCandle?.low ?? lastPrice, lastPrice),
+    volume: lastCandle?.volume ?? 0,
+    quoteVolume: 0,
+    market: marketKind,
+  };
+}
+
 async function fetchCapitalTicker(
   displaySymbol: string,
   epic: string,
@@ -814,7 +847,12 @@ async function fetchCapitalTicker(
   const response = await fetchCapital<CapitalMarketsResponse>("/markets", {
     searchTerm,
   });
-  const market = response?.markets?.find((item) => item.epic === epic);
+  const markets = response?.markets ?? [];
+  const normalizedEpic = epic.toUpperCase();
+  const market =
+    markets.find((item) => item.epic?.toUpperCase() === normalizedEpic) ??
+    markets.find((item) => item.epic?.toUpperCase().includes(normalizedEpic)) ??
+    markets[0];
 
   if (!market) {
     return null;
@@ -942,10 +980,13 @@ function buildTicker(
   symbol: string,
   quote: FinnhubQuoteResponse,
   market: Ticker24h["market"],
+  yahooQuote?: YahooQuoteResult | null,
+  marketCap?: number,
 ): Ticker24h {
   const lastPrice = quote.c ?? 0;
   const previousClose = quote.pc ?? lastPrice;
   const priceChange = quote.d ?? lastPrice - previousClose;
+  const volume = yahooQuote?.regularMarketVolume ?? 0;
 
   return {
     symbol,
@@ -955,8 +996,9 @@ function buildTicker(
       quote.dp ?? (previousClose === 0 ? 0 : (priceChange / previousClose) * 100),
     highPrice: quote.h ?? lastPrice,
     lowPrice: quote.l ?? lastPrice,
-    volume: 0,
-    quoteVolume: 0,
+    volume,
+    quoteVolume: volume * lastPrice,
+    marketCap: yahooQuote?.marketCap ?? marketCap,
     market,
   };
 }
@@ -1009,6 +1051,38 @@ async function fetchYahooChart(
   }
 
   return result;
+}
+
+async function fetchYahooQuote(yahooSymbol: string) {
+  const url = new URL(YAHOO_QUOTE_BASE);
+  url.searchParams.set("symbols", yahooSymbol);
+
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0",
+    },
+  });
+
+  if (!res.ok) return null;
+
+  const data = (await res.json()) as YahooQuoteResponse;
+  return data.quoteResponse?.result?.[0] ?? null;
+}
+
+async function fetchFinnhubMarketCap(finnhubSymbol: string) {
+  const data = await fetchFinnhub<FinnhubMetricResponse>("/stock/metric", {
+    symbol: finnhubSymbol,
+    metric: "all",
+  });
+
+  if (data instanceof Response) return undefined;
+
+  const marketCap = data.metric?.marketCapitalization;
+  if (!isFiniteNumber(marketCap) || marketCap <= 0) return undefined;
+
+  return marketCap < 10_000_000_000 ? marketCap * 1_000_000 : marketCap;
 }
 
 function getYahooChartSymbols(futuresSymbol: string | undefined, yahooSymbol: string) {
@@ -1082,24 +1156,39 @@ function buildYahooTicker(
   symbol: string,
   result: YahooChartResult,
   market: Ticker24h["market"],
+  yahooQuote?: YahooQuoteResult | null,
+  marketCap?: number,
 ): Ticker24h {
   const candles = parseYahooCandles(result);
   const last = candles[candles.length - 1];
   const previous = candles[candles.length - 2] ?? last;
-  const lastPrice = result.meta?.regularMarketPrice ?? last?.close ?? 0;
+  const lastPrice =
+    yahooQuote?.regularMarketPrice ?? result.meta?.regularMarketPrice ?? last?.close ?? 0;
   const previousClose = result.meta?.chartPreviousClose ?? previous?.close ?? lastPrice;
-  const priceChange = lastPrice - previousClose;
+  const priceChange = yahooQuote?.regularMarketChange ?? lastPrice - previousClose;
+  const volume =
+    yahooQuote?.regularMarketVolume ?? result.meta?.regularMarketVolume ?? last?.volume ?? 0;
 
   return {
     symbol,
     lastPrice,
     priceChange,
     priceChangePercent:
-      previousClose === 0 ? 0 : (priceChange / previousClose) * 100,
-    highPrice: result.meta?.regularMarketDayHigh ?? last?.high ?? lastPrice,
-    lowPrice: result.meta?.regularMarketDayLow ?? last?.low ?? lastPrice,
-    volume: result.meta?.regularMarketVolume ?? last?.volume ?? 0,
-    quoteVolume: 0,
+      yahooQuote?.regularMarketChangePercent ??
+      (previousClose === 0 ? 0 : (priceChange / previousClose) * 100),
+    highPrice:
+      yahooQuote?.regularMarketDayHigh ??
+      result.meta?.regularMarketDayHigh ??
+      last?.high ??
+      lastPrice,
+    lowPrice:
+      yahooQuote?.regularMarketDayLow ??
+      result.meta?.regularMarketDayLow ??
+      last?.low ??
+      lastPrice,
+    volume,
+    quoteVolume: volume * lastPrice,
+    marketCap: yahooQuote?.marketCap ?? result.meta?.marketCap ?? marketCap,
     market,
   };
 }
@@ -1188,17 +1277,37 @@ export async function GET(request: Request) {
         }
       : null);
   const commodity = getCommodityInstrument(symbol);
-  const instrument = index ?? stock ?? commodity;
-  const market = stock ? "stock" : commodity ? "commodity" : "index";
-  const capitalEpic = index?.capitalEpic ?? commodity?.capitalEpic;
+  const forex = getForexInstrument(symbol);
+  const instrument = index ?? stock ?? commodity ?? forex;
+  const market = stock
+    ? "stock"
+    : commodity
+      ? "commodity"
+      : forex
+        ? "forex"
+        : "index";
+  const capitalEpic =
+    index?.capitalEpic ?? commodity?.capitalEpic ?? forex?.capitalEpic;
+  const simplefxSymbol = index?.simplefxSymbol ?? forex?.simplefxSymbol;
   const capitalSearchTerm =
-    index?.capitalEpic ?? commodity?.capitalSearchTerm ?? commodity?.capitalEpic;
+    index?.capitalEpic ??
+    commodity?.capitalSearchTerm ??
+    commodity?.capitalEpic ??
+    forex?.capitalEpic;
 
   if (!instrument) {
     return Response.json({ error: "Instrumento no soportado" }, { status: 404 });
   }
 
   if (kind === "ticker") {
+    if (simplefxSymbol) {
+      const ticker = await fetchSimpleFxTicker(symbol, simplefxSymbol, market);
+
+      if (ticker) {
+        return Response.json({ ticker, provider: "simplefx" });
+      }
+    }
+
     if (capitalEpic) {
       const ticker = await fetchCapitalTicker(
         symbol,
@@ -1219,14 +1328,6 @@ export async function GET(request: Request) {
       }
     }
 
-    if (index?.bingxSymbol) {
-      const ticker = await fetchBingxTicker(symbol, index.bingxSymbol);
-
-      if (ticker) {
-        return Response.json({ ticker, provider: "bingx" });
-      }
-    }
-
     const chartSymbols = getYahooChartSymbols(
       index?.futuresSymbol,
       instrument.yahooSymbol,
@@ -1236,8 +1337,16 @@ export async function GET(request: Request) {
     });
 
     if (!(quote instanceof Response) && hasUsableFinnhubQuote(quote)) {
+      const [yahooQuote, marketCap] =
+        market === "stock"
+          ? await Promise.all([
+              fetchYahooQuote(instrument.yahooSymbol),
+              fetchFinnhubMarketCap(instrument.finnhubSymbol),
+            ])
+          : [null, undefined];
+
       return Response.json({
-        ticker: buildTicker(symbol, quote, market),
+        ticker: buildTicker(symbol, quote, market, yahooQuote, marketCap),
         provider: "finnhub",
       });
     }
@@ -1251,8 +1360,16 @@ export async function GET(request: Request) {
       return yahooResult;
     }
 
+    const [yahooQuote, marketCap] =
+      market === "stock"
+        ? await Promise.all([
+            fetchYahooQuote(instrument.yahooSymbol),
+            fetchFinnhubMarketCap(instrument.finnhubSymbol),
+          ])
+        : [null, undefined];
+
     return Response.json({
-      ticker: buildYahooTicker(symbol, yahooResult, market),
+      ticker: buildYahooTicker(symbol, yahooResult, market, yahooQuote, marketCap),
       provider: "yahoo-fallback",
     });
   }
@@ -1262,22 +1379,16 @@ export async function GET(request: Request) {
     index?.futuresSymbol,
     instrument.yahooSymbol,
   );
-  const useLongHistoryProvider = isLongHistoryTimeframe(timeframe);
-
-  if (
-    index?.bingxSymbol &&
-    !capitalEpic &&
-    (!useLongHistoryProvider || beforeTime !== undefined)
-  ) {
-    const bingxCandles = await fetchBingxCandles(
-      index.bingxSymbol,
+  if (simplefxSymbol) {
+    const simpleFxCandles = await fetchSimpleFxCandles(
+      simplefxSymbol,
       timeframe,
       limit,
       beforeTime,
     );
 
-    if (bingxCandles.length > 0) {
-      return Response.json({ candles: bingxCandles, provider: "bingx" });
+    if (simpleFxCandles.length > 0) {
+      return Response.json({ candles: simpleFxCandles, provider: "simplefx" });
     }
   }
 

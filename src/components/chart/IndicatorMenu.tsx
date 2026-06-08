@@ -34,14 +34,24 @@ interface ToolEntry {
 type Entry = IndicatorEntry | ToolEntry;
 
 const ENTRIES: Entry[] = [
-  { type: "indicator", key: "ema20", group: "Medias moviles", label: (c) => `EMA ${c.ema20}` },
-  { type: "indicator", key: "ema50", group: "Medias moviles", label: (c) => `EMA ${c.ema50}` },
-  { type: "indicator", key: "ema200", group: "Medias moviles", label: (c) => `EMA ${c.ema200}` },
   {
     type: "indicator",
     key: "emaCross",
     group: "Medias moviles",
     label: (c) => `EMA Cross (${c.emaCross.map((line) => line.period).join(", ")})`,
+  },
+  {
+    type: "indicator",
+    key: "emaCross2",
+    group: "Medias moviles",
+    label: (c) => `EMA Cross 7/25 (${c.emaCross2.map((line) => line.period).join(", ")})`,
+  },
+
+  {
+    type: "indicator",
+    key: "vwapBands",
+    group: "Medias moviles",
+    label: () => "VWAP + Bandas",
   },
   { type: "indicator", key: "volume", group: "Volumen", label: () => "Volumen" },
   {
@@ -51,10 +61,22 @@ const ENTRIES: Entry[] = [
     label: () => "Volume Profile Visible Range",
   },
   {
+    type: "indicator",
+    key: "liquidityBlocks",
+    group: "Volumen",
+    label: () => "Bloques de Liquidez",
+  },
+  {
     type: "tool",
     key: "fixedVolumeProfile",
     group: "Volumen",
     label: () => "Fixed Volume Profile",
+  },
+  {
+    type: "indicator",
+    key: "monthlyGann",
+    group: "Gann",
+    label: () => "Gann mensual",
   },
   {
     type: "indicator",

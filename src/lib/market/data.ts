@@ -25,18 +25,57 @@ import {
   isMainIndexSymbol,
 } from "./indices";
 import {
+  FOREX_SYMBOLS,
+  getForexInstrument,
+  isCapitalForexSymbol,
+  isForexSymbol,
+} from "./forex";
+import {
   getStockInstrument,
   isStockSymbol,
   registerStockInstruments,
   STOCK_SYMBOLS,
 } from "./stocks";
 
+const FALLBACK_CRYPTO_SYMBOLS: SymbolInfo[] = [
+  ["BTC", "Bitcoin"],
+  ["ETH", "Ethereum"],
+  ["SOL", "Solana"],
+  ["BNB", "BNB"],
+  ["XRP", "XRP"],
+  ["ADA", "Cardano"],
+  ["DOGE", "Dogecoin"],
+  ["SHIB", "Shiba Inu"],
+  ["AVAX", "Avalanche"],
+  ["LINK", "Chainlink"],
+  ["DOT", "Polkadot"],
+  ["LTC", "Litecoin"],
+  ["BCH", "Bitcoin Cash"],
+  ["UNI", "Uniswap"],
+].map(([baseAsset, name]) => ({
+  symbol: `${baseAsset}USDT`,
+  baseAsset,
+  quoteAsset: "USDT",
+  status: "TRADING",
+  market: "crypto" as const,
+  name,
+}));
+
 export function isCryptoSymbol(symbol: string) {
-  return !isIndexSymbol(symbol) && !isStockSymbol(symbol) && !isCommoditySymbol(symbol);
+  return (
+    !isIndexSymbol(symbol) &&
+    !isStockSymbol(symbol) &&
+    !isCommoditySymbol(symbol) &&
+    !isForexSymbol(symbol)
+  );
 }
 
 export function isCapitalMarketSymbol(symbol: string) {
-  return isCapitalIndexSymbol(symbol) || isCapitalCommoditySymbol(symbol);
+  return (
+    isCapitalIndexSymbol(symbol) ||
+    isCapitalCommoditySymbol(symbol) ||
+    isCapitalForexSymbol(symbol)
+  );
 }
 
 export function getCapitalPollIntervalMs(symbol: string) {
@@ -46,7 +85,7 @@ export function getCapitalPollIntervalMs(symbol: string) {
 export function getMarketPollIntervalMs(symbol: string) {
   const upper = symbol.toUpperCase();
 
-  if (isMainIndexSymbol(upper)) {
+  if (isMainIndexSymbol(upper) || isForexSymbol(upper)) {
     return 1_000;
   }
 
@@ -66,10 +105,10 @@ export function getSymbolDisplay(symbol: string) {
       primary: index.name,
       secondary: "Indice",
       compact: index.symbol,
-      source: index.capitalEpic
+      source: index.simplefxSymbol
+        ? "SimpleFX"
+        : index.capitalEpic
         ? "Capital.com"
-        : index.bingxSymbol
-        ? "BingX Futures"
         : index.futuresSource ?? (index.futuresSymbol ? "Futures" : "Indice"),
     };
   }
@@ -80,7 +119,17 @@ export function getSymbolDisplay(symbol: string) {
       primary: commodity.name,
       secondary: "Commodity",
       compact: commodity.symbol,
-      source: "Capital.com",
+      source: commodity.capitalEpic ? "Capital.com" : "Commodity",
+    };
+  }
+
+  const forex = getForexInstrument(symbol);
+  if (forex) {
+    return {
+      primary: forex.name,
+      secondary: "Forex",
+      compact: forex.displaySymbol,
+      source: forex.simplefxSymbol ? "SimpleFX" : "Capital.com",
     };
   }
 
@@ -157,6 +206,29 @@ async function fetchCryptoTickers24hWithFallback(symbols: string[]) {
     .filter((ticker): ticker is Ticker24h => ticker !== undefined);
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+) {
+  const results: R[] = [];
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+
+  return results;
+}
+
 function getMarketApiUrl(
   symbol: string,
   kind: "candles" | "ticker",
@@ -173,6 +245,8 @@ function getMarketApiUrl(
     params.set("market", "stock");
   } else if (isCommoditySymbol(symbol)) {
     params.set("market", "commodity");
+  } else if (isForexSymbol(symbol)) {
+    params.set("market", "forex");
   } else if (isIndexSymbol(symbol)) {
     params.set("market", "index");
   }
@@ -214,7 +288,12 @@ export async function fetchKlines(
   limit = 1000,
   beforeTime?: number,
 ): Promise<Candle[]> {
-  if (isIndexSymbol(symbol) || isStockSymbol(symbol) || isCommoditySymbol(symbol)) {
+  if (
+    isIndexSymbol(symbol) ||
+    isStockSymbol(symbol) ||
+    isCommoditySymbol(symbol) ||
+    isForexSymbol(symbol)
+  ) {
     const res = await fetch(
       getMarketApiUrl(symbol, "candles", interval, limit, beforeTime),
       {
@@ -234,12 +313,19 @@ export async function fetchKlines(
 }
 
 export async function fetchTicker24h(symbol: string): Promise<Ticker24h> {
-  if (isIndexSymbol(symbol) || isStockSymbol(symbol) || isCommoditySymbol(symbol)) {
+  if (
+    isIndexSymbol(symbol) ||
+    isStockSymbol(symbol) ||
+    isCommoditySymbol(symbol) ||
+    isForexSymbol(symbol)
+  ) {
     const market = isStockSymbol(symbol)
       ? "stock"
       : isCommoditySymbol(symbol)
         ? "commodity"
-        : "index";
+        : isForexSymbol(symbol)
+          ? "forex"
+          : "index";
     const res = await fetch(getMarketApiUrl(symbol, "ticker"), {
       cache: "no-store",
     });
@@ -270,23 +356,21 @@ export async function fetchTickers24h(symbols: string[]): Promise<Ticker24h[]> {
   const indexSymbols = symbols.filter(isIndexSymbol);
   const stockSymbols = symbols.filter(isStockSymbol);
   const commoditySymbols = symbols.filter(isCommoditySymbol);
-  const [cryptoTickers, indexTickers, stockTickers, commodityTickers] =
+  const forexSymbols = symbols.filter(isForexSymbol);
+  const [cryptoTickers, indexTickers, stockTickers, commodityTickers, forexTickers] =
     await Promise.all([
     cryptoSymbols.length > 0 ? fetchCryptoTickers24hWithFallback(cryptoSymbols) : [],
-    Promise.all(
-      indexSymbols.map((symbol) =>
-        fetchTicker24h(symbol).catch(() => null),
-      ),
+    mapWithConcurrency(indexSymbols, 4, (symbol) =>
+      fetchTicker24h(symbol).catch(() => null),
     ),
-    Promise.all(
-      stockSymbols.map((symbol) =>
-        fetchTicker24h(symbol).catch(() => null),
-      ),
+    mapWithConcurrency(stockSymbols, 4, (symbol) =>
+      fetchTicker24h(symbol).catch(() => null),
     ),
-    Promise.all(
-      commoditySymbols.map((symbol) =>
-        fetchTicker24h(symbol).catch(() => null),
-      ),
+    mapWithConcurrency(commoditySymbols, 4, (symbol) =>
+      fetchTicker24h(symbol).catch(() => null),
+    ),
+    mapWithConcurrency(forexSymbols, 4, (symbol) =>
+      fetchTicker24h(symbol).catch(() => null),
     ),
     ]);
 
@@ -295,25 +379,43 @@ export async function fetchTickers24h(symbols: string[]): Promise<Ticker24h[]> {
     ...indexTickers.filter((ticker): ticker is Ticker24h => ticker !== null),
     ...stockTickers.filter((ticker): ticker is Ticker24h => ticker !== null),
     ...commodityTickers.filter((ticker): ticker is Ticker24h => ticker !== null),
+    ...forexTickers.filter((ticker): ticker is Ticker24h => ticker !== null),
   ];
 }
 
 export async function fetchExchangeSymbols(): Promise<SymbolInfo[]> {
+  const localSymbols = getLocalMarketSymbols();
   const [binanceSymbols, bingxSymbols] = await Promise.all([
     fetchCryptoSymbols().catch(() => []),
     fetchBingxCryptoSymbols().catch(() => []),
   ]);
-  const cryptoSymbolMap = new Map<string, SymbolInfo>();
+  const cryptoSymbolMap = new Map<string, SymbolInfo>(
+    FALLBACK_CRYPTO_SYMBOLS.map((symbol) => [symbol.symbol, symbol]),
+  );
 
-  bingxSymbols.forEach((symbol) => cryptoSymbolMap.set(symbol.symbol, symbol));
-  binanceSymbols.forEach((symbol) => cryptoSymbolMap.set(symbol.symbol, symbol));
+  [...bingxSymbols, ...binanceSymbols].forEach((symbol) => {
+    const fallback = cryptoSymbolMap.get(symbol.symbol);
+    cryptoSymbolMap.set(symbol.symbol, {
+      ...symbol,
+      name: symbol.name ?? fallback?.name,
+      region: symbol.region ?? fallback?.region,
+    });
+  });
 
   return [
-    ...INDEX_SYMBOLS,
-    ...COMMODITY_SYMBOLS,
-    ...STOCK_SYMBOLS,
+    ...localSymbols,
     ...Array.from(cryptoSymbolMap.values()).sort((a, b) =>
       a.symbol.localeCompare(b.symbol),
     ),
+  ];
+}
+
+export function getLocalMarketSymbols(): SymbolInfo[] {
+  return [
+    ...INDEX_SYMBOLS,
+    ...COMMODITY_SYMBOLS,
+    ...FOREX_SYMBOLS,
+    ...STOCK_SYMBOLS,
+    ...FALLBACK_CRYPTO_SYMBOLS,
   ];
 }

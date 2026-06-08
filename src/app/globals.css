@@ -95,11 +95,22 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
+  body {
+    @apply bg-tv-bg text-foreground;
+  }
+
+  /* FIX RADIX UI BLOCKING TOUCH EVENTS ON MOBILE */
+  body[data-scroll-locked] {
+    pointer-events: auto !important;
+  }
+  [data-radix-popper-content-wrapper] {
+    pointer-events: auto !important;
+  }
+  
   html,
   body {
-    @apply bg-background text-foreground;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   html {

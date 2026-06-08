@@ -36,6 +36,15 @@ export const COMMODITY_INSTRUMENTS: CommodityInstrument[] = [
     name: "Crude Oil Spot",
     region: "Commodities",
   },
+  {
+    symbol: "NATGAS",
+    yahooSymbol: "NG=F",
+    finnhubSymbol: "OANDA:NATGAS_USD",
+    capitalEpic: "NATURALGAS",
+    capitalSearchTerm: "Natural Gas",
+    name: "Natural Gas",
+    region: "Commodities",
+  },
 ];
 
 export const COMMODITY_SYMBOLS: SymbolInfo[] = COMMODITY_INSTRUMENTS.map(

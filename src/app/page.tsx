@@ -1,7 +1,8 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
@@ -40,6 +41,7 @@ function getPagePanelTheme(panelColor: string) {
 }
 
 export default function HomePage() {
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const symbol = useChartStore((s) => s.symbol);
   const timeframe = useChartStore((s) => s.timeframe);
   const pageBackgroundColor = useChartStore((s) => s.pageBackgroundColor);
@@ -77,18 +79,37 @@ export default function HomePage() {
 
   return (
     <div
-      className="tv-theme flex h-screen w-screen flex-col overflow-hidden bg-tv-bg"
+      className="tv-theme flex fixed inset-0 flex-col overflow-hidden bg-tv-bg"
       style={appStyle}
     >
       <Header />
       <div className="flex min-h-0 flex-1">
-        <LeftSidebar />
-        <main className="relative flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1">
+        <div className="hidden md:flex">
+          <LeftSidebar />
+        </div>
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <PriceChart symbol={symbol} timeframe={timeframe} />
           </div>
         </main>
-        <RightSidebar />
+        <aside className="hidden md:flex w-8 shrink-0 flex-col items-center border-l border-tv-border bg-tv-panel py-1.5">
+          <button
+            type="button"
+            aria-label={rightSidebarOpen ? "Ocultar barra lateral" : "Mostrar barra lateral"}
+            title={rightSidebarOpen ? "Ocultar barra lateral" : "Mostrar barra lateral"}
+            onClick={() => setRightSidebarOpen((open) => !open)}
+            className="flex h-7 w-7 items-center justify-center rounded text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text"
+          >
+            {rightSidebarOpen ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4" />
+            )}
+          </button>
+        </aside>
+        <div className="hidden md:flex">
+          <RightSidebar hidden={!rightSidebarOpen} />
+        </div>
       </div>
       <BottomPanel />
       <IndicatorSettingsDialog />

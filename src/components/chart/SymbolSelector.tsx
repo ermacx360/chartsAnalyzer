@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   fetchExchangeSymbols,
   fetchStockSearchSymbols,
+  getLocalMarketSymbols,
 } from "@/lib/market/data";
 import { useChartStore } from "@/lib/store/chart-store";
 import { cn } from "@/lib/utils";
@@ -29,7 +30,9 @@ export function SymbolSelector() {
   const setOpen = useChartStore((s) => s.setSymbolDialogOpen);
 
   const [query, setQuery] = useState("");
-  const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([]);
+  const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>(() =>
+    getLocalMarketSymbols(),
+  );
   const [stockSearchSymbols, setStockSearchSymbols] = useState<SymbolInfo[]>([]);
   const [stockSearchLoading, setStockSearchLoading] = useState(false);
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
@@ -40,12 +43,12 @@ export function SymbolSelector() {
     (marketFilter === "all" || marketFilter === "stock");
 
   useEffect(() => {
-    if (open && allSymbols.length === 0) {
+    if (open) {
       fetchExchangeSymbols()
         .then(setAllSymbols)
-        .catch(() => setAllSymbols([]));
+        .catch(() => setAllSymbols(getLocalMarketSymbols()));
     }
-  }, [open, allSymbols.length]);
+  }, [open]);
 
   useEffect(() => {
     if (!shouldSearchStocks) {
@@ -76,9 +79,21 @@ export function SymbolSelector() {
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
     const symbolMap = new Map<string, SymbolInfo>();
-    allSymbols.forEach((symbol) => symbolMap.set(symbol.symbol, symbol));
+
+    function addSymbol(symbol: SymbolInfo) {
+      const existing = symbolMap.get(symbol.symbol);
+      symbolMap.set(symbol.symbol, {
+        ...symbol,
+        name: symbol.name ?? existing?.name,
+        region: symbol.region ?? existing?.region,
+      });
+    }
+
+    getLocalMarketSymbols().forEach(addSymbol);
+    allSymbols.forEach(addSymbol);
+    getLocalMarketSymbols().forEach(addSymbol);
     if (shouldSearchStocks) {
-      stockSearchSymbols.forEach((symbol) => symbolMap.set(symbol.symbol, symbol));
+      stockSearchSymbols.forEach(addSymbol);
     }
 
     return Array.from(symbolMap.values())
@@ -107,12 +122,13 @@ export function SymbolSelector() {
           <DialogTitle className="text-sm font-medium">Buscar símbolo</DialogTitle>
         </DialogHeader>
         <div className="space-y-2 border-b border-tv-border p-3">
-          <div className="grid grid-cols-5 rounded border border-tv-border bg-tv-bg p-0.5 text-[11px]">
+          <div className="grid grid-cols-6 rounded border border-tv-border bg-tv-bg p-0.5 text-[11px]">
             {[
               ["all", "Todo"],
               ["crypto", "Cripto"],
               ["index", "Índices"],
               ["commodity", "Commod."],
+              ["forex", "Forex"],
               ["stock", "Acciones"],
             ].map(([value, label]) => (
               <button

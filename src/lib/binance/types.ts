@@ -16,7 +16,12 @@ export type Timeframe =
   | "1w"
   | "1M";
 
-export type MarketKind = "crypto" | "index" | "stock" | "commodity";
+export type MarketKind =
+  | "crypto"
+  | "index"
+  | "stock"
+  | "commodity"
+  | "forex";
 
 export interface Candle {
   time: number; // unix seconds
@@ -37,6 +42,7 @@ export interface Ticker24h {
   lowPrice: number;
   volume: number;
   quoteVolume: number;
+  marketCap?: number;
   market?: MarketKind;
 }
 

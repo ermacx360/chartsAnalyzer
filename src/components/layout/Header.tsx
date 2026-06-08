@@ -1121,9 +1121,9 @@ function PageBackgroundSelector() {
 
 export function Header() {
   return (
-    <header className="flex h-12 items-center justify-between border-b border-tv-border bg-tv-panel px-3">
-      <div className="flex min-w-0 items-center gap-1">
-        <div className="flex items-center gap-2 pr-2">
+    <header className="flex h-12 items-center justify-between border-b border-tv-border bg-tv-panel px-3 overflow-x-auto hide-scrollbar">
+      <div className="flex shrink-0 items-center gap-1">
+        <div className="hidden md:flex items-center gap-2 pr-2">
           <div className="flex h-7 w-7 items-center justify-center rounded bg-tv-blue/20">
             <Zap className="h-4 w-4 text-tv-blue" />
           </div>
@@ -1136,10 +1136,12 @@ export function Header() {
         <Separator orientation="vertical" className="mx-1 h-6 bg-tv-border" />
         <IndicatorMenu />
         <Separator orientation="vertical" className="mx-1 hidden h-6 bg-tv-border xl:block" />
-        <MarketClocks />
+        <div className="hidden md:block">
+          <MarketClocks />
+        </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <Link
           href="/heatmap"
           className="flex h-7 items-center gap-1.5 rounded px-2 text-xs font-medium text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text"

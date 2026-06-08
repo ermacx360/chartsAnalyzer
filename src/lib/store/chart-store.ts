@@ -5,20 +5,22 @@ import { persist } from "zustand/middleware";
 import type { MarketKind, Timeframe } from "@/lib/binance/types";
 import type { SqzAdxTtmConfig } from "@/lib/indicators/sqz-adx-ttm";
 import { COMMODITY_INSTRUMENTS } from "@/lib/market/commodities";
+import { FOREX_INSTRUMENTS } from "@/lib/market/forex";
 import { TOP_STOCK_SYMBOLS } from "@/lib/market/stocks";
 
 export type IndicatorKey =
-  | "ema20"
-  | "ema50"
-  | "ema200"
   | "emaCross"
+  | "emaCross2"
   | "rsi"
   | "macd"
   | "volume"
   | "volumeProfile"
+  | "monthlyGann"
   | "swingPatterns"
   | "pmRangeBreakout"
-  | "sqzAdxTtm";
+  | "sqzAdxTtm"
+  | "vwapBands"
+  | "liquidityBlocks";
 
 export type DrawingTool =
   | "cursor"
@@ -55,6 +57,7 @@ export type DrawingTool =
   | "doubleCurve"
   | "fibRetracement"
   | "fibExtension"
+  | "gannGrid"
   | "fixedVolumeProfile"
   | "measureRange"
   | "longPosition"
@@ -184,6 +187,47 @@ export interface VolumeProfileConfig {
   pocColor: string;
 }
 
+export interface VolumeConfig {
+  heightPct: number;
+  ema20Enabled: boolean;
+  ema20Color: string;
+}
+
+export interface LiquidityBlocksConfig {
+  bucketPct: number;
+  topBlocks: number;
+  minVolumeUsdt: number;
+  buyColor: string;
+  sellColor: string;
+  opacity: number;
+}
+
+export interface MonthlyGannConfig {
+  startDate: string;
+  endDate: string;
+  topPriceOverride?: number | null;
+  bottomPriceOverride?: number | null;
+  color: string;
+  fillColor: string;
+  opacity: number;
+  lineOpacity: number;
+  showLabels: boolean;
+}
+
+export interface ChartVisualSettings {
+  gridVisible: boolean;
+  colorBarsByPreviousClose: boolean;
+  candleBodyVisible: boolean;
+  candleBorderVisible: boolean;
+  candleWickVisible: boolean;
+  candleBodyUpColor: string;
+  candleBodyDownColor: string;
+  candleBorderUpColor: string;
+  candleBorderDownColor: string;
+  candleWickUpColor: string;
+  candleWickDownColor: string;
+}
+
 export interface PriceLine {
   id: string;
   symbol: string;
@@ -193,6 +237,56 @@ export interface PriceLine {
 export const DEFAULT_PAGE_BACKGROUND_COLOR = "#131722";
 export const DEFAULT_PAGE_PANEL_COLOR = "#1e222d";
 export const DEFAULT_CHART_TIMEZONE = "America/Argentina/Buenos_Aires";
+const CHART_VISUAL_SETTINGS_VERSION = 2;
+export const DEFAULT_CHART_VISUAL_SETTINGS: ChartVisualSettings = {
+  gridVisible: false,
+  colorBarsByPreviousClose: false,
+  candleBodyVisible: true,
+  candleBorderVisible: true,
+  candleWickVisible: true,
+  candleBodyUpColor: "#26a69a",
+  candleBodyDownColor: "#ef5350",
+  candleBorderUpColor: "#26a69a",
+  candleBorderDownColor: "#ef5350",
+  candleWickUpColor: "#26a69a",
+  candleWickDownColor: "#ef5350",
+};
+export const DEFAULT_TIMEFRAME_VISIBILITY: Record<Timeframe, boolean> = {
+  "1s": false,
+  "1m": true,
+  "3m": true,
+  "5m": true,
+  "15m": true,
+  "30m": true,
+  "1h": true,
+  "2h": false,
+  "4h": true,
+  "6h": false,
+  "8h": false,
+  "12h": false,
+  "1d": true,
+  "3d": false,
+  "1w": true,
+  "1M": true,
+};
+const LEGACY_ALL_TIMEFRAME_VISIBILITY: Record<Timeframe, boolean> = {
+  "1s": true,
+  "1m": true,
+  "3m": true,
+  "5m": true,
+  "15m": true,
+  "30m": true,
+  "1h": true,
+  "2h": true,
+  "4h": true,
+  "6h": true,
+  "8h": true,
+  "12h": true,
+  "1d": true,
+  "3d": true,
+  "1w": true,
+  "1M": true,
+};
 export const CHART_TIMEZONE_OPTIONS = [
   { label: "UTC", value: "UTC" },
   { label: "BA", value: DEFAULT_CHART_TIMEZONE },
@@ -213,6 +307,18 @@ export interface FibonacciLevelConfig {
   color: string;
 }
 
+export interface GannGridSettings {
+  priceLevels?: FibonacciLevelConfig[];
+  timeLevels?: FibonacciLevelConfig[];
+  showLeftLabels?: boolean;
+  showRightLabels?: boolean;
+  showTopLabels?: boolean;
+  showBottomLabels?: boolean;
+  showPriceBackground?: boolean;
+  showTimeBackground?: boolean;
+  lineOpacity?: number;
+}
+
 export interface ChartDrawing {
   id: string;
   symbol: string;
@@ -231,6 +337,7 @@ export interface ChartDrawing {
   fixedVolumeProfilePocColor?: string;
   showTrendLine?: boolean;
   fibonacciLevels?: FibonacciLevelConfig[];
+  gannGrid?: GannGridSettings;
   locked: boolean;
 }
 
@@ -242,26 +349,43 @@ export interface WatchlistFolder {
 export type WatchlistAssignments = Record<string, string>;
 
 export interface IndicatorConfig {
-  ema20: number;
-  ema50: number;
-  ema200: number;
   rsi: number;
   rsiSettings: RsiSettingsConfig;
   macdFast: number;
   macdSlow: number;
   macdSignal: number;
+  volume: VolumeConfig;
   volumeProfile: VolumeProfileConfig;
+  monthlyGann: MonthlyGannConfig;
   emaCross: EmaCrossLineConfig[];
   emaCrossFill: EmaCrossFillConfig;
+  emaCross2: EmaCrossLineConfig[];
+  emaCross2Fill: EmaCrossFillConfig;
   swingPatterns: SwingPatternsConfig;
   pmRangeBreakout: PmRangeBreakoutConfig;
   sqzAdxTtm: SqzAdxTtmConfig;
+  vwapBands: VwapBandsConfig;
+  liquidityBlocks: LiquidityBlocksConfig;
+}
+
+export interface VwapBandsConfig {
+  anchor: "Session" | "Week" | "Month" | "Year";
+  calcMode: "Standard Deviation" | "Percentage";
+  showBand1: boolean;
+  bandMult1: number;
+  showBand2: boolean;
+  bandMult2: number;
+  showBand3: boolean;
+  bandMult3: number;
+  color: string;
+  band1Color: string;
+  band2Color: string;
+  band3Color: string;
+  opacity: number;
+  lineWidth: number;
 }
 
 export const DEFAULT_CONFIG: IndicatorConfig = {
-  ema20: 20,
-  ema50: 50,
-  ema200: 200,
   rsi: 14,
   rsiSettings: {
     maType: "SMA",
@@ -280,6 +404,11 @@ export const DEFAULT_CONFIG: IndicatorConfig = {
   macdFast: 12,
   macdSlow: 26,
   macdSignal: 9,
+  volume: {
+    heightPct: 26,
+    ema20Enabled: false,
+    ema20Color: "#fbc02d",
+  },
   volumeProfile: {
     rows: 72,
     widthPct: 34,
@@ -287,6 +416,17 @@ export const DEFAULT_CONFIG: IndicatorConfig = {
     buyColor: "#16823a",
     sellColor: "#8f2636",
     pocColor: "#ffe600",
+  },
+  monthlyGann: {
+    startDate: "",
+    endDate: "",
+    topPriceOverride: null,
+    bottomPriceOverride: null,
+    color: "#ffffff",
+    fillColor: "#2962ff",
+    opacity: 8,
+    lineOpacity: 90,
+    showLabels: true,
   },
   emaCross: [
     { enabled: false, period: 7, color: "#ffaa00", lineStyle: "solid" },
@@ -302,6 +442,17 @@ export const DEFAULT_CONFIG: IndicatorConfig = {
     to: 3,
     color: "#e4ff1a",
     opacity: 18,
+  },
+  emaCross2: [
+    { enabled: true, period: 7, color: "#ff7b00", lineStyle: "solid" },
+    { enabled: true, period: 25, color: "#00ff40", lineStyle: "solid" },
+  ],
+  emaCross2Fill: {
+    enabled: false,
+    from: 0,
+    to: 1,
+    color: "#00e5ff",
+    opacity: 14,
   },
   swingPatterns: {
     length: 21,
@@ -385,6 +536,31 @@ export const DEFAULT_CONFIG: IndicatorConfig = {
     waveCLength: 233,
     showTtmSqueeze: false,
   },
+
+  vwapBands: {
+    anchor: "Session",
+    calcMode: "Standard Deviation",
+    showBand1: false,
+    bandMult1: 1.0,
+    showBand2: false,
+    bandMult2: 2.0,
+    showBand3: false,
+    bandMult3: 3.0,
+    color: "#c800ff",
+    band1Color: "#4caf50",
+    band2Color: "#0011ff",
+    band3Color: "#0400ff",
+    opacity: 0.5,
+    lineWidth: 1,
+  },
+  liquidityBlocks: {
+    bucketPct: 0.1,
+    topBlocks: 15,
+    minVolumeUsdt: 100000,
+    buyColor: "#16823a",
+    sellColor: "#8f2636",
+    opacity: 0.8,
+  },
 };
 
 const LEGACY_EMA_CROSS_DEFAULTS: EmaCrossLineConfig[][] = [
@@ -431,18 +607,24 @@ const LEGACY_EMA_CROSS_FILL_DEFAULTS: EmaCrossFillConfig[] = [
   },
 ];
 
+const LEGACY_EMA_CROSS_2_DEFAULT: EmaCrossLineConfig[] = [
+  { enabled: true, period: 7, color: "#00e5ff", lineStyle: "solid" },
+  { enabled: true, period: 25, color: "#ff4fd8", lineStyle: "solid" },
+];
+
 export const INDICATOR_COLORS: Record<IndicatorKey, string> = {
-  ema20: "#ffb74d",
-  ema50: "#2962ff",
-  ema200: "#ab47bc",
   emaCross: "#22ab94",
+  emaCross2: "#00e5ff",
   rsi: "#7E57C2",
   macd: "#2962ff",
   volume: "#787b86",
   volumeProfile: "#ffe600",
+  monthlyGann: "#ffffff",
   swingPatterns: "#22ab94",
   pmRangeBreakout: "#2962ff",
   sqzAdxTtm: "#2ef527",
+  vwapBands: "#2962FF",
+  liquidityBlocks: "#ffffff",
 };
 
 export const DEFAULT_WATCHLIST = [
@@ -455,7 +637,6 @@ export const DEFAULT_WATCHLIST = [
   "ADAUSDT",
   "AVAXUSDT",
   "LINKUSDT",
-  "MATICUSDT",
   "SPX",
   "NDX",
   "DJI",
@@ -465,11 +646,17 @@ export const DEFAULT_WATCHLIST = [
   "GOLD",
   "SILVER",
   "OIL",
+  "EURUSD",
+  "USDJPY",
+  "GBPUSD",
+  "USDCAD",
+  "AUDUSD",
 ];
 
 const TOP_COMMODITY_SYMBOLS = COMMODITY_INSTRUMENTS.map(
   (commodity) => commodity.symbol,
 );
+const TOP_FOREX_SYMBOLS = FOREX_INSTRUMENTS.map((pair) => pair.symbol);
 
 const DEFAULT_WATCHLIST_FOLDER_RULES = [
   {
@@ -505,7 +692,6 @@ const DEFAULT_WATCHLIST_FOLDER_RULES = [
       "LDO",
       "LINK",
       "MANA",
-      "MATIC",
       "MKR",
       "NEAR",
       "OCEAN",
@@ -538,6 +724,11 @@ const DEFAULT_WATCHLIST_FOLDER_RULES = [
     id: "commodities",
     name: "Commodities",
     assets: TOP_COMMODITY_SYMBOLS,
+  },
+  {
+    id: "forex",
+    name: "Forex",
+    assets: TOP_FOREX_SYMBOLS,
   },
   {
     id: "indices",
@@ -583,6 +774,7 @@ export const DEFAULT_WATCHLIST_FOLDERS: WatchlistFolder[] =
     { id: "indices", name: "Índices" },
     { id: "stocks", name: "Acciones" },
     { id: "commodities", name: "Commodities" },
+    { id: "forex", name: "Forex" },
   ];
 
 export const DEFAULT_WATCHLIST_FOLDER_IDS = DEFAULT_WATCHLIST_FOLDERS.map(
@@ -593,7 +785,8 @@ const WATCHLIST_FALLBACK_FOLDER_ID = "majors";
 const WATCHLIST_INDICES_FOLDER_ID = "indices";
 const WATCHLIST_STOCKS_FOLDER_ID = "stocks";
 const WATCHLIST_COMMODITIES_FOLDER_ID = "commodities";
-const WATCHLIST_FOLDER_VERSION = 3;
+const WATCHLIST_FOREX_FOLDER_ID = "forex";
+const WATCHLIST_FOLDER_VERSION = 4;
 
 function isSameEmaCrossConfig(
   config: EmaCrossLineConfig[] | undefined,
@@ -632,6 +825,17 @@ function isLegacyEmaCrossFillDefault(fill?: EmaCrossFillConfig) {
         fill.color === legacyFill.color &&
         fill.opacity === legacyFill.opacity,
     )
+  );
+}
+
+function isSameTimeframeVisibility(
+  visibility: Record<Timeframe, boolean> | undefined,
+  expected: Record<Timeframe, boolean>,
+) {
+  if (!visibility) return false;
+
+  return (Object.keys(expected) as Timeframe[]).every(
+    (timeframe) => visibility[timeframe] === expected[timeframe],
   );
 }
 
@@ -717,9 +921,11 @@ function getFolderIdByMarket(market: MarketKind, validFolderIds: Set<string>) {
       ? WATCHLIST_STOCKS_FOLDER_ID
       : market === "commodity"
         ? WATCHLIST_COMMODITIES_FOLDER_ID
-        : market === "index"
-          ? WATCHLIST_INDICES_FOLDER_ID
-          : WATCHLIST_FALLBACK_FOLDER_ID;
+        : market === "forex"
+          ? WATCHLIST_FOREX_FOLDER_ID
+          : market === "index"
+            ? WATCHLIST_INDICES_FOLDER_ID
+            : WATCHLIST_FALLBACK_FOLDER_ID;
 
   return validFolderIds.has(marketFolderId) ? marketFolderId : null;
 }
@@ -788,6 +994,9 @@ interface ChartState {
   pageBackgroundColor: string;
   pagePanelColor: string;
   chartTimeZone: string;
+  chartVisualSettings: ChartVisualSettings;
+  chartVisualSettingsVersion: number;
+  timeframeVisibility: Record<Timeframe, boolean>;
 
   // Chart UI state
   tool: DrawingTool;
@@ -807,6 +1016,9 @@ interface ChartState {
   setPageBackgroundColor: (color: string) => void;
   setPagePanelColor: (color: string) => void;
   setChartTimeZone: (timeZone: string) => void;
+  setChartVisualSettings: (patch: Partial<ChartVisualSettings>) => void;
+  setTimeframeVisibility: (timeframe: Timeframe, visible: boolean) => void;
+  resetTimeframeVisibility: () => void;
   addToWatchlist: (s: string, folderId?: string, marketHint?: MarketKind) => void;
   removeFromWatchlist: (s: string) => void;
   createWatchlistFolder: (name: string) => void;
@@ -833,27 +1045,29 @@ export const useChartStore = create<ChartState>()(
       symbol: "BTCUSDT",
       timeframe: "15m" as Timeframe,
       indicators: {
-        ema20: false,
-        ema50: false,
-        ema200: false,
         emaCross: false,
-        rsi: true,
+        emaCross2: false,
+        rsi: false,
         macd: false,
         volume: true,
         volumeProfile: false,
+        vwapBands: false,
+        liquidityBlocks: false,
+        monthlyGann: false,
         swingPatterns: false,
         pmRangeBreakout: false,
         sqzAdxTtm: false,
       },
       hidden: {
-        ema20: false,
-        ema50: false,
-        ema200: false,
         emaCross: false,
+        emaCross2: false,
         rsi: false,
         macd: false,
         volume: false,
         volumeProfile: false,
+        vwapBands: false,
+        liquidityBlocks: false,
+        monthlyGann: false,
         swingPatterns: false,
         pmRangeBreakout: false,
         sqzAdxTtm: false,
@@ -869,6 +1083,9 @@ export const useChartStore = create<ChartState>()(
       pageBackgroundColor: DEFAULT_PAGE_BACKGROUND_COLOR,
       pagePanelColor: DEFAULT_PAGE_PANEL_COLOR,
       chartTimeZone: DEFAULT_CHART_TIMEZONE,
+      chartVisualSettings: DEFAULT_CHART_VISUAL_SETTINGS,
+      chartVisualSettingsVersion: CHART_VISUAL_SETTINGS_VERSION,
+      timeframeVisibility: DEFAULT_TIMEFRAME_VISIBILITY,
       tool: "cursor",
       priceLines: [],
       drawings: [],
@@ -898,6 +1115,22 @@ export const useChartStore = create<ChartState>()(
         set({ pageBackgroundColor }),
       setPagePanelColor: (pagePanelColor) => set({ pagePanelColor }),
       setChartTimeZone: (chartTimeZone) => set({ chartTimeZone }),
+      setChartVisualSettings: (patch) =>
+        set((state) => ({
+          chartVisualSettings: {
+            ...state.chartVisualSettings,
+            ...patch,
+          },
+        })),
+      setTimeframeVisibility: (timeframe, visible) =>
+        set((state) => ({
+          timeframeVisibility: {
+            ...state.timeframeVisibility,
+            [timeframe]: visible,
+          },
+        })),
+      resetTimeframeVisibility: () =>
+        set({ timeframeVisibility: DEFAULT_TIMEFRAME_VISIBILITY }),
       addToWatchlist: (s, folderId, marketHint) =>
         set((state) => {
           const symbol = s.toUpperCase();
@@ -1096,6 +1329,9 @@ export const useChartStore = create<ChartState>()(
         pageBackgroundColor: s.pageBackgroundColor,
         pagePanelColor: s.pagePanelColor,
         chartTimeZone: s.chartTimeZone,
+        chartVisualSettings: s.chartVisualSettings,
+        chartVisualSettingsVersion: s.chartVisualSettingsVersion,
+        timeframeVisibility: s.timeframeVisibility,
         drawings: s.drawings,
       }),
       merge: (persisted, current) => {
@@ -1114,6 +1350,9 @@ export const useChartStore = create<ChartState>()(
             | "pageBackgroundColor"
             | "pagePanelColor"
             | "chartTimeZone"
+            | "chartVisualSettings"
+            | "chartVisualSettingsVersion"
+            | "timeframeVisibility"
             | "drawings"
           >
         >;
@@ -1130,14 +1369,40 @@ export const useChartStore = create<ChartState>()(
                 ...current.config.emaCrossFill,
                 ...state.config?.emaCrossFill,
               };
+        const persistedEmaCross2 = state.config?.emaCross2;
+        const emaCross2 = isSameEmaCrossConfig(
+          persistedEmaCross2,
+          LEGACY_EMA_CROSS_2_DEFAULT,
+        )
+          ? current.config.emaCross2
+          : persistedEmaCross2 ?? current.config.emaCross2;
+        const emaCross2Fill = {
+          ...current.config.emaCross2Fill,
+          ...state.config?.emaCross2Fill,
+        };
         const persistedPmRangeBreakout = state.config?.pmRangeBreakout;
         const hasLegacyPmRangeBreakoutDefault =
           isLegacyPmRangeBreakoutDefault(persistedPmRangeBreakout);
+        const timeframeVisibility = isSameTimeframeVisibility(
+          state.timeframeVisibility,
+          LEGACY_ALL_TIMEFRAME_VISIBILITY,
+        )
+          ? current.timeframeVisibility
+          : {
+              ...current.timeframeVisibility,
+              ...state.timeframeVisibility,
+            };
         const persistedFolderVersion = state.watchlistFolderVersion ?? 1;
         const baseWatchlist = state.watchlist ?? current.watchlist;
         const watchlist =
           persistedFolderVersion < WATCHLIST_FOLDER_VERSION
-            ? Array.from(new Set([...baseWatchlist, ...TOP_COMMODITY_SYMBOLS]))
+            ? Array.from(
+                new Set([
+                  ...baseWatchlist,
+                  ...TOP_COMMODITY_SYMBOLS,
+                  ...TOP_FOREX_SYMBOLS,
+                ]),
+              )
             : baseWatchlist;
         const watchlistFolders = normalizeWatchlistFolders(
           state.watchlistFolders ?? current.watchlistFolders,
@@ -1157,23 +1422,36 @@ export const useChartStore = create<ChartState>()(
         if (persistedFolderVersion < WATCHLIST_FOLDER_VERSION) {
           addDefaultFolder(WATCHLIST_STOCKS_FOLDER_ID, "Acciones");
           addDefaultFolder(WATCHLIST_COMMODITIES_FOLDER_ID, "Commodities");
+          addDefaultFolder(WATCHLIST_FOREX_FOLDER_ID, "Forex");
         }
         const watchlistAssignments = buildWatchlistAssignments(
           watchlist,
           migratedWatchlistFolders,
           state.watchlistAssignments ?? current.watchlistAssignments,
         );
+        const indicators = { ...current.indicators, ...state.indicators };
+        const hidden = { ...current.hidden, ...state.hidden };
+        delete (indicators as Partial<Record<string, boolean>>).ema20;
+        delete (indicators as Partial<Record<string, boolean>>).ema50;
+        delete (indicators as Partial<Record<string, boolean>>).ema200;
+        delete (hidden as Partial<Record<string, boolean>>).ema20;
+        delete (hidden as Partial<Record<string, boolean>>).ema50;
+        delete (hidden as Partial<Record<string, boolean>>).ema200;
+        indicators.rsi = false;
+        hidden.rsi = false;
 
         return {
           ...current,
           ...state,
-          indicators: { ...current.indicators, ...state.indicators },
-          hidden: { ...current.hidden, ...state.hidden },
+          indicators,
+          hidden,
           config: {
             ...current.config,
             ...state.config,
             emaCross,
             emaCrossFill,
+            emaCross2,
+            emaCross2Fill,
             rsiSettings: {
               ...current.config.rsiSettings,
               ...state.config?.rsiSettings,
@@ -1182,9 +1460,17 @@ export const useChartStore = create<ChartState>()(
               ...current.config.swingPatterns,
               ...state.config?.swingPatterns,
             },
+            volume: {
+              ...current.config.volume,
+              ...state.config?.volume,
+            },
             volumeProfile: {
               ...current.config.volumeProfile,
               ...state.config?.volumeProfile,
+            },
+            monthlyGann: {
+              ...current.config.monthlyGann,
+              ...state.config?.monthlyGann,
             },
             pmRangeBreakout: {
               ...current.config.pmRangeBreakout,
@@ -1229,6 +1515,17 @@ export const useChartStore = create<ChartState>()(
             typeof state.chartTimeZone === "string"
               ? state.chartTimeZone
               : current.chartTimeZone,
+          chartVisualSettings: {
+            ...current.chartVisualSettings,
+            ...state.chartVisualSettings,
+            gridVisible:
+              (state.chartVisualSettingsVersion ?? 1) < CHART_VISUAL_SETTINGS_VERSION
+                ? false
+                : (state.chartVisualSettings?.gridVisible ??
+                  current.chartVisualSettings.gridVisible),
+          },
+          chartVisualSettingsVersion: CHART_VISUAL_SETTINGS_VERSION,
+          timeframeVisibility,
         };
       },
     },
